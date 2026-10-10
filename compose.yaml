@@ -12,8 +12,9 @@ services:
     environment:
       TZ: ${TZ:-America/Los_Angeles}
     ports:
-      # Reachable from other devices on your home network. Use "127.0.0.1:8000:8000" for this computer only.
-      - "${CHEMO_PUBLISH_PORT:-8000}:8000"
+      # CHEMO_BIND=0.0.0.0 (default) reaches other devices on your home network.
+      # CHEMO_BIND=127.0.0.1 keeps it on this computer, e.g. behind `tailscale serve`.
+      - "${CHEMO_BIND:-0.0.0.0}:${CHEMO_PUBLISH_PORT:-8000}:8000"
     volumes:
       - ./data:/data
       - ${CHEMO_BACKUP_HOST_DIR:-./backups}:/backups

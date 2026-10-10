@@ -52,7 +52,7 @@ All health data stays in `./data` (the SQLite database) and your backup folder. 
 
 - Set `CHEMO_PASSWORD` in `.env` if anyone besides your household can reach the port.
 - To reach it away from home, use a private network such as [Tailscale](https://tailscale.com). Don't forward the port to the open internet.
-- To bind it to the host computer only, set the port to `127.0.0.1:8000:8000` in `compose.yaml`.
+- To keep it on the host computer only, set `CHEMO_BIND=127.0.0.1` in `.env`. With Tailscale you can then share it privately to your own devices over HTTPS: `tailscale serve --bg 8000`.
 
 ## Configuration
 
