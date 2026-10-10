@@ -1,0 +1,39 @@
+{% extends "setup_base.html" %}
+{% block title %}{{ med.name }} label · ChemoTracker{% endblock %}
+{% block setup %}
+{% from "_ui.html" import icon %}
+{% set v = values if values is defined else med %}
+<div class="meta">Medicine {{ index + 1 }} of {{ total }}</div>
+<h1 style="margin-top: var(--s1)">{{ med.name }}{% if med.brand %} <span class="muted" style="font-weight: 400; font-size: var(--fs-xl)">({{ med.brand }})</span>{% endif %}</h1>
+{% if info %}<p class="lead">{{ info.family }}. {{ info.why }}</p>{% endif %}
+
+<form class="form" method="post" action="/setup/label/{{ index }}" style="margin-top: var(--s6)">
+  {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
+  <input type="hidden" name="name" value="{{ med.name }}">
+  <div class="card card-pad form">
+    <h2>From the label</h2>
+    {% if med.category == "infusion" or (plan and plan.kind == "clinic") %}<p class="hint">Given at the clinic? The strength and dose are optional. The clinic records them.</p>{% endif %}
+    <div class="field-row">
+      <div class="field"><label for="strength">Strength</label><input id="strength" name="strength" type="text" value="{{ v.strength or '' }}" placeholder="For example: 25 mg tablet"></div>
+      <div class="field"><label for="dose">Dose</label><input id="dose" name="dose" type="text" value="{{ v.dose or '' }}" placeholder="For example: 1 tablet"></div>
+    </div>
+    <div class="field"><label for="directions">Directions</label><textarea id="directions" name="directions" rows="2" placeholder="Copy it word for word, for example: Take 1 tablet by mouth at bedtime">{{ v.directions or '' }}</textarea></div>
+    <div class="field">
+      <label for="gap">Hours between doses <span class="meta">(for as-needed medicines)</span></label>
+      <input id="gap" name="min_hours_between" type="number" inputmode="decimal" min="0.25" max="168" step="0.25" value="{{ (v.min_hours_between | string | replace('.0', '')) if v.min_hours_between else '' }}" placeholder="&quot;Every 6 hours&quot; means 6" style="max-width: 16ch">
+    </div>
+    <input type="hidden" name="route" value="{{ med.route }}">
+  </div>
+
+  <div class="card card-pad form">
+    <h2>When you take it</h2>
+    {% if extra_plans > 0 %}<p class="hint">This medicine has {{ extra_plans }} more schedule{{ "s" if extra_plans > 1 }}. Change those under Medicines.</p>{% endif %}
+    {% with show_cycles=False %}{% include "_plan_form.html" %}{% endwith %}
+  </div>
+
+  <div class="setup-nav">
+    <a class="btn btn-secondary btn-lg" href="{{ '/setup/label/' ~ (index - 1) if index > 0 else '/setup/medicines' }}">{{ icon("arrow-left") }}Back</a>
+    <button class="btn btn-primary btn-lg" type="submit">{{ "Next medicine" if index + 1 < total else "Next" }} {{ icon("arrow-right") }}</button>
+  </div>
+</form>
+{% endblock %}

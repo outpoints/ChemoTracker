@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Settings · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon %}
+<div class="page page-narrow">
+  <div class="page-head"><div><h1>Settings</h1></div></div>
+
+  <form class="card card-pad form" method="post" action="/settings">
+    <h2>Care team</h2>
+    <div class="field"><label for="patient_name">Name on the report <span class="meta">(optional)</span></label><input id="patient_name" name="patient_name" type="text" value="{{ prefs.patient_name }}" autocomplete="off"><p class="hint">Stays on this device. Shown at the top of the Excel report.</p></div>
+    <div class="field"><label for="clinic_name">Clinic</label><input id="clinic_name" name="clinic_name" type="text" value="{{ prefs.clinic_name }}"></div>
+    <div class="field-row">
+      <div class="field"><label for="clinic_phone">Clinic phone</label><input id="clinic_phone" name="clinic_phone" type="tel" value="{{ prefs.clinic_phone }}"></div>
+      <div class="field"><label for="after_hours_phone">After-hours phone</label><input id="after_hours_phone" name="after_hours_phone" type="tel" value="{{ prefs.after_hours_phone }}"></div>
+    </div>
+    <div class="field"><label for="fever_f">Fever line (°F)</label><input id="fever_f" name="fever_f" type="number" step="0.1" min="97" max="104" value="{{ prefs.fever_f }}" style="max-width: 10ch"><p class="hint">Use the number on your care team's instructions. A temperature at or above it shows a "call now" message.</p></div>
+    <div class="field"><label for="call_if">When to call (one per line)</label><textarea id="call_if" name="call_if" rows="4">{{ prefs.call_if }}</textarea><p class="hint">Copy these from your chemo teaching sheet.</p></div>
+    <button class="btn btn-primary" type="submit">{{ icon("check") }}Save</button>
+  </form>
+
+  <section class="card card-pad" style="margin-top: var(--s5)">
+    <h2>Appearance</h2>
+    <fieldset class="theme-pick" style="margin-top: var(--s3)">
+      <legend class="visually-hidden">Theme</legend>
+      <div class="segmented">
+        <label><input type="radio" name="theme" value="auto" data-theme-pick>Match device</label>
+        <label><input type="radio" name="theme" value="light" data-theme-pick>Light</label>
+        <label><input type="radio" name="theme" value="dark" data-theme-pick>Night</label>
+      </div>
+    </fieldset>
+    <p class="hint" style="margin-top: var(--s2)">Night mode is dim for bedtime doses. Saved on this device only.</p>
+  </section>
+
+  <section class="card card-pad" id="backups" style="margin-top: var(--s5)">
+    <h2>Backups</h2>
+    <dl class="kv" style="margin-top: var(--s3)">
+      <dt>Folder</dt><dd class="mono" style="word-break: break-all">{{ cfg.backup_dir }}</dd>
+      <dt>Schedule</dt><dd>{% if cfg.backup_enabled %}{% if cfg.backup_interval_hours == 24 %}Daily at {{ fmt_time(cfg.backup_time.strftime("%H:%M")) }}{% else %}Every {{ cfg.backup_interval_hours | string | replace(".0", "") }} hours from {{ fmt_time(cfg.backup_time.strftime("%H:%M")) }}{% endif %}{% else %}Off{% endif %}</dd>
+      <dt>Keeps</dt><dd>Newest {{ cfg.backup_keep }}</dd>
+      {% if cfg.backup_enabled %}<dt>Next</dt><dd>{{ fmt_rel(next_backup.date(), today) }} {{ fmt_time(next_backup) }}</dd>{% endif %}
+      {% set last_ok = history | selectattr("ok") | list | first %}
+      <dt>Last good backup</dt><dd>{% if last_ok %}{{ last_ok.created_at[:16] | replace("T", " ") }} UTC{% else %}None yet{% endif %}</dd>
+    </dl>
+    {% set last = history | first %}
+    {% if last and not last.ok %}<div class="error-box" style="margin-top: var(--s3)">Last backup failed: {{ last.error }}</div>{% endif %}
+    <p class="hint" style="margin-top: var(--s3)">Each backup is a copy of the database plus the Excel report. Change the folder and schedule with the CHEMO_BACKUP_* settings (see the README).</p>
+    <div class="row-wrap" style="margin-top: var(--s4)">
+      <form method="post" action="/settings/backup"><button class="btn btn-primary" type="submit">{{ icon("database") }}Back up now</button></form>
+      <a class="btn btn-secondary" href="/settings/database.sqlite3">{{ icon("download") }}Download a copy</a>
+    </div>
+    {% if files %}
+    <ul class="list" style="margin: var(--s4) calc(var(--s5) * -1) calc(var(--s5) * -1)">
+      {% for f in files %}<li class="list-item" style="min-height: 48px"><span class="mono grow" style="font-size: var(--fs-sm)">{{ f.name }}</span><span class="meta">{{ (f.stat().st_size / 1024) | round(0) | int }} KB</span></li>{% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  <section class="card card-pad" style="margin-top: var(--s5)">
+    <h2>Setup</h2>
+    <p class="meta" style="margin-top: var(--s2)">Walk through picking medicines and copying labels again. Nothing is deleted.</p>
+    <a class="btn btn-secondary" style="margin-top: var(--s3)" href="/setup/medicines">Run setup again</a>
+  </section>
+
+  <p class="meta" style="margin: var(--s6) 0">ChemoTracker {{ version }}. Medicine summaries come from MedlinePlus. This app keeps a record; it doesn't give medical advice.</p>
+</div>
+{% endblock %}

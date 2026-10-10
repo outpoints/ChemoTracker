@@ -1,0 +1,22 @@
+{# Medicine catalog checklist. Expects: catalog, chosen (set of keys), shortcuts #}
+<div class="picker-search">
+  <input type="search" placeholder="Search, for example Zofran or ondansetron" data-filter aria-label="Search medicines" autocomplete="off">
+</div>
+<div class="shortcuts" style="margin-top: var(--s2)">
+  <span class="meta">Chemo shortcut:</span>
+  {% for name, keys in shortcuts %}<button type="button" class="btn btn-soft btn-sm" data-keys="{{ keys | join(',') }}">{{ name }}</button>{% endfor %}
+</div>
+<p class="hint" style="margin-top: var(--s2)">Shortcuts only tick the chemo medicines in that plan. Pick the other medicines from your own prescriptions.</p>
+
+{% for key, name, blurb, meds in catalog %}
+<section class="card picker-group" data-group>
+  <div class="ghead"><h3>{{ name }}</h3><small>{{ blurb }}</small></div>
+  {% for m in meds %}
+  <label class="pick" data-text="{{ (m.generic ~ ' ' ~ (m.brands | join(' ')) ~ ' ' ~ m.family ~ ' ' ~ m.key) | lower }}">
+    <input type="checkbox" name="keys[]" value="{{ m.key }}" {% if m.key in chosen %}checked{% endif %}>
+    <span><span class="n">{{ m.generic }}</span>{% if m.brands %} <span class="b">({{ m.brands[:2] | join(", ") }})</span>{% endif %}{% if taken is defined and m.key in taken %} <span class="badge">On your list</span>{% endif %}<span class="f">{{ m.family }}</span></span>
+  </label>
+  {% endfor %}
+</section>
+{% endfor %}
+<p class="meta" data-no-results hidden style="margin-top: var(--s4)">No match in the list. Add it below.</p>

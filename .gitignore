@@ -1,0 +1,29 @@
+# Personal data never goes into git: database, exports, private protocols, secrets.
+data/
+backups/
+*.sqlite3
+*.sqlite3-*
+*.xlsx
+*.csv
+.env
+
+# Source images of clinic paperwork
+*.png
+*.jpg
+*.jpeg
+*.heic
+!src/chemotracker/static/**/*.png
+
+# Python / tooling
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+.DS_Store
+
+# Private decision log, design mockups, and notes (may reference real care details)
+.private/

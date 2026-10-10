@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Log {{ med.name }} · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon %}
+<div class="page page-narrow">
+  <a class="btn btn-quiet" href="/" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Today</a>
+  <div class="page-head" style="margin-top: var(--s2)">
+    <div>
+      <div class="eyebrow">Log a dose</div>
+      <h1>{{ med.name }}{% if med.strength %} <span class="muted" style="font-weight: 400">{{ med.strength }}</span>{% endif %}</h1>
+      {% if med.directions %}<p class="sub">Label: {{ med.directions }}</p>{% endif %}
+    </div>
+  </div>
+  <form class="form card card-pad" method="post" action="/dose/new">
+    {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
+    <input type="hidden" name="medication_id" value="{{ med.id }}">
+    <div class="field-row">
+      <div class="field"><label for="taken_at">When did you take it?</label><input id="taken_at" name="taken_at" type="datetime-local" value="{{ values.taken_at }}" required></div>
+      <div class="field"><label for="dose">Dose</label><input id="dose" name="dose" type="text" value="{{ values.dose }}" placeholder="For example: 1 tablet"></div>
+    </div>
+    <div class="field">
+      <label for="reason">Taken for <span class="meta">(optional)</span></label>
+      <input id="reason" name="reason" type="text" value="{{ values.reason or reason }}" placeholder="For example: nausea">
+    </div>
+    <button class="btn btn-primary btn-lg btn-block" type="submit">{{ icon("check") }}Save dose</button>
+  </form>
+</div>
+{% endblock %}

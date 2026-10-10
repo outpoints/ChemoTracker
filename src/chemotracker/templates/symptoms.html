@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Symptoms · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon, call_card %}
+<div class="page page-narrow">
+  <div class="page-head">
+    <div>
+      <div class="eyebrow-row">
+        <div class="eyebrow">{{ fmt_rel(day, today) }} · {{ fmt_day(day) }}{% if cycle %} · Cycle {{ cycle.number }}, Day {{ (day - parse_local(cycle.day1 ~ " 00:00").date()).days + 1 }}{% endif %}</div>
+        <nav class="daynav" aria-label="Change day">
+          <a href="/symptoms?d={{ (day - timedelta(days=1)).isoformat() }}" aria-label="Previous day">{{ icon("chevron-left") }}</a>
+          {% if day != today %}<a class="label" href="/symptoms">Today</a>{% endif %}
+          <a href="/symptoms?d={{ (day + timedelta(days=1)).isoformat() }}" aria-label="Next day">{{ icon("chevron-right") }}</a>
+        </nav>
+      </div>
+      <h1>Symptoms</h1>
+      <p class="sub">Log how you feel as often as you like. Your care team sees it in the report.</p>
+    </div>
+  </div>
+
+  <section class="card feel" id="all" aria-labelledby="log-h">
+    <h2 id="log-h">What are you noticing?</h2>
+    <div class="feel-grid">
+      {% for s in all_symptoms %}
+      <a class="chip-btn" href="/symptoms/new?s={{ s.key }}">{{ icon(s.icon) }}<span>{{ s.name }}</span></a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="section-title"><h2>{{ "Today" if day == today else fmt_day(day) }}</h2><span class="meta">{{ entries | length }} {{ "entry" if entries | length == 1 else "entries" }}</span></div>
+  <div class="card">
+    {% if timeline %}
+    <ul class="timeline">
+      {% for kind, at, row in timeline %}
+      <li>
+        <span class="t">{{ fmt_time(at) }}</span>
+        {% if kind == "symptom" %}
+        {% set sym = lookup_symptom(row.symptom) %}
+        <span class="dot s{{ score(row, fever_f) }}"></span>
+        <div>
+          <div class="what">{{ row.label if row.symptom == "other" else sym.name }} · {{ sym.describe(row.severity, row.value) }}</div>
+          {% if sym.kind == "severity" and row.severity %}<div class="note">{{ sym.levels[row.severity - 1] }}</div>{% endif %}
+          {% if row.notes %}<div class="note">{{ row.notes }}</div>{% endif %}
+        </div>
+        <a class="btn btn-quiet btn-sm" href="/symptoms/{{ row.id }}" aria-label="Edit">{{ icon("edit") }}</a>
+        {% else %}
+        <span class="dot is-dose"></span>
+        <div>
+          <div class="what">Took {{ row.med_name }}{% if row.dose %} <span class="meta">{{ row.dose }}</span>{% endif %}</div>
+          {% if row.helped %}<div class="note">Helped: {{ helped_names[row.helped] }}{% if row.dose_feel %} · Dose: {{ feel_names[row.dose_feel] | lower }}{% endif %}</div>{% endif %}
+        </div>
+        <a class="btn btn-quiet btn-sm" href="/dose/{{ row.id }}" aria-label="Edit">{{ icon("edit") }}</a>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="empty"><p>Nothing logged {{ "yet today" if day == today else "this day" }}.</p></div>
+    {% endif %}
+  </div>
+
+  {% set days, by = week %}
+  {% if by %}
+  <div class="section-title"><h2>Last 7 days</h2><span class="meta">Darker = worse</span></div>
+  <div class="card card-pad" style="overflow-x: auto">
+    <table class="heat">
+      <thead><tr><th></th>{% for d in days %}<th>{{ d.strftime("%a") }}<br>{{ d.day }}</th>{% endfor %}</tr></thead>
+      <tbody>
+        {% for name, cells in by.items() %}
+        <tr><th class="name" scope="row">{{ name }}</th>{% for d in days %}<td class="{{ ('s' ~ cells[d]) if d in cells }}" title="{{ name }} {{ d }}"></td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <div style="margin-top: var(--s8)">{{ call_card(prefs) }}</div>
+</div>
+{% endblock %}

@@ -1,0 +1,58 @@
+{# Plan (schedule) fields. Expects: plan (row/dict or none), length, show_cycles #}
+{% from "_ui.html" import icon %}
+{% set p = plan or {} %}
+{% set kind = p.kind or "scheduled" %}
+{% set start = p.start_day if (p.start_day is defined and p.start_day is not none) else 1 %}
+{% set end = p.end_day if p.end_day is defined else none %}
+{% set whole = (p | length > 0) and p.start_day is defined and p.start_day is not none and end is none %}
+<fieldset>
+  <legend>How is it taken?</legend>
+  <div class="segmented">
+    {% for k, v in kind_names.items() %}<label><input type="radio" name="kind" value="{{ k }}" {% if kind == k %}checked{% endif %} data-kind>{{ v }}</label>{% endfor %}
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>Which days of the cycle?</legend>
+  <p class="hint" style="margin: calc(var(--s1) * -1) 0 var(--s3)">Day 1 is chemo day. Day 0 is the day before. Tap the days in a row, like 2, 3 and 4.</p>
+  <div class="day-chips">
+    {% for d in range(0, length + 1) %}
+    {% if whole %}{% set on = d >= start %}{% elif end is not none %}{% set on = start <= d <= end %}{% else %}{% set on = d == start %}{% endif %}
+    <label class="{{ 'chemo' if d == 1 }}"><input type="checkbox" name="days[]" value="{{ d }}" {% if on %}checked{% endif %}><small>{{ 'Chemo' if d == 1 else ('Before' if d == 0 else 'Day') }}</small><span>{{ d }}</span></label>
+    {% endfor %}
+  </div>
+  <label class="check" style="margin-top: var(--s2)">
+    <input type="checkbox" name="whole_cycle" value="1" {% if whole %}checked{% endif %}>
+    <span><span class="t">Keep going to the end of every cycle</span><span class="d">For medicines taken every day, like hormone pills or a bowel routine</span></span>
+  </label>
+</fieldset>
+
+<div data-kind-section="scheduled" {% if kind != "scheduled" %}hidden{% endif %}>
+  <fieldset>
+    <legend>What time?</legend>
+    <div class="times" data-times>
+      {% set ts = plan_times(p) if p.times else [] %}
+      {% for t in ts or [""] %}
+      <div class="time-row"><input type="time" name="times[]" value="{{ t }}" aria-label="Time"><button type="button" class="btn btn-quiet btn-sm" data-remove-time>Remove</button></div>
+      {% endfor %}
+    </div>
+    <button type="button" class="btn btn-soft btn-sm" style="margin-top: var(--s2)" data-add-time>{{ icon("plus") }}Add another time</button>
+    <p class="hint">Today groups doses into Morning, Afternoon, Evening and Bedtime by their time.</p>
+  </fieldset>
+</div>
+
+<div class="field">
+  <label for="label-{{ p.id or 'new' }}">Short note shown with the dose <span class="meta">(optional)</span></label>
+  <input id="label-{{ p.id or 'new' }}" name="label" type="text" value="{{ p.label or '' }}" placeholder="For example: with food, at bedtime">
+</div>
+
+{% if show_cycles %}
+<details class="more" {% if p.from_cycle and (p.from_cycle != 1 or p.to_cycle) %}open{% endif %}>
+  <summary>Only some cycles?</summary>
+  <div class="field-row">
+    <div class="field"><label>From cycle</label><input type="number" name="from_cycle" min="1" max="99" value="{{ p.from_cycle or 1 }}"></div>
+    <div class="field"><label>Through cycle</label><input type="number" name="to_cycle" min="1" max="99" value="{{ p.to_cycle or '' }}" placeholder="Every cycle"></div>
+  </div>
+  <p class="hint">For AC-T, the AC medicines might be cycles 1–4 and the paclitaxel pre-medicines cycle 5 on.</p>
+</details>
+{% endif %}

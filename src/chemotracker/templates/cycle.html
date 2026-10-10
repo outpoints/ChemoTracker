@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Cycle {{ cycle.number }} · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon, ring_svg, ring_legend %}
+{% set day1 = parse_local(cycle.day1 ~ " 00:00").date() %}
+{% set idx = (cycles | map(attribute="id") | list).index(cycle.id) %}
+<div class="page">
+  <a class="btn btn-quiet" href="/cycles" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Cycles</a>
+  <div class="page-head" style="margin-top: var(--s2)">
+    <div>
+      <div class="eyebrow">Day 1 {{ fmt_day(day1) }} · {{ cycle.length_days }} days{% if cycle.regimen %} · {{ cycle.regimen }}{% endif %}</div>
+      <h1>Cycle {{ cycle.number }}</h1>
+    </div>
+    <nav class="daynav" aria-label="Other cycles">
+      {% if idx > 0 %}<a href="/cycles/{{ cycles[idx - 1].id }}" aria-label="Previous cycle">{{ icon("chevron-left") }}</a>{% endif %}
+      <a class="label" href="/report?cycle={{ cycle.id }}">Report</a>
+      {% if idx < cycles | length - 1 %}<a href="/cycles/{{ cycles[idx + 1].id }}" aria-label="Next cycle">{{ icon("chevron-right") }}</a>{% endif %}
+    </nav>
+  </div>
+
+  <div class="two-col">
+    <div class="stack">
+      <p class="meta">✓ taken (time) · – skipped · ! not logged · ○ planned · shaded = as-needed allowed. Symptoms show the worst entry each day.</p>
+      <div class="sheet-wrap">
+        <table class="sheet">
+          <thead>
+            <tr>
+              <th class="name" scope="col">Medicine</th>
+              {% for dn in days %}
+              {% set d = day1 + timedelta(days=dn - 1) %}
+              <th scope="col" class="{{ 'today-col' if d == today }}">{{ "Chemo" if dn == 1 else "Day " ~ dn }}<small>{{ d.strftime("%a") }} {{ d.day }}</small></th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in med_rows %}
+            <tr>
+              <th class="name" scope="row"><a href="/medicines/{{ r.medication_id }}" class="n" style="text-decoration: none">{{ r.name }}</a><small>{{ kind_names[r.kind] }}{% if r.detail %} · {{ r.detail }}{% endif %}</small></th>
+              {% for dn in days %}
+              {% set c = r.cells[dn] %}
+              {% set d = day1 + timedelta(days=dn - 1) %}
+              {% set cls = "missing" if c.missing else ("taken" if c.taken else ("skipped" if c.skipped else ("upcoming" if c.upcoming else ("allowed" if c.allowed else "")))) %}
+              <td class="cell {{ cls }} {{ 'today-col' if d == today }}">
+                {%- for t in c.taken %}✓{% if t.taken_at and r.kind != "clinic" %} {{ fmt_time(t.taken_at) | replace(" AM", "a") | replace(" PM", "p") }}{% endif %}<br>{% endfor -%}
+                {%- if c.allowed and not c.taken %}<span class="visually-hidden">allowed</span>{% endif -%}
+                {%- for t in c.skipped %}–<br>{% endfor -%}
+                {%- for _ in range(c.missing) %}!<br>{% endfor -%}
+                {%- for _ in range(c.upcoming) %}○<br>{% endfor -%}
+              </td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+            {% if sym_rows %}
+            <tr class="group"><th colspan="{{ days | length + 1 }}">Symptoms</th></tr>
+            {% for r in sym_rows %}
+            <tr>
+              <th class="name" scope="row"><span class="n">{{ r.name }}</span></th>
+              {% for dn in days %}
+              {% set entries = r.cells[dn] %}
+              {% set d = day1 + timedelta(days=dn - 1) %}
+              {% if entries %}
+              {% set best = namespace(row=entries[0], s=-1) %}
+              {% for e in entries %}{% set s = score(e, fever_f) %}{% if s > best.s %}{% set best.row = e %}{% set best.s = s %}{% endif %}{% endfor %}
+              <td class="cell s{{ best.s }} {{ 'today-col' if d == today }}">{{ lookup_symptom(best.row.symptom).describe(best.row.severity, best.row.value) | replace(" out of 10", "/10") }}</td>
+              {% else %}
+              <td class="cell {{ 'today-col' if d == today }}"></td>
+              {% endif %}
+              {% endfor %}
+            </tr>
+            {% endfor %}
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      {% if not med_rows %}<div class="card empty"><p>No medicines are scheduled for this cycle.</p></div>{% endif %}
+    </div>
+
+    <aside class="stack">
+      <div class="card card-pad">
+        {{ ring_svg(ring, 0, cycle, 240) }}
+        {{ ring_legend() }}
+      </div>
+      <details class="card more" style="padding: 0 var(--s5)">
+        <summary>Change this cycle</summary>
+        <form class="form" method="post" action="/cycles/{{ cycle.id }}" style="padding-bottom: var(--s5)">
+          <div class="field-row">
+            <div class="field"><label>Cycle number</label><input name="number" type="number" min="1" max="99" value="{{ cycle.number }}" required></div>
+            <div class="field"><label>Days in the cycle</label><input name="length_days" type="number" min="1" max="90" value="{{ cycle.length_days }}" required></div>
+          </div>
+          <div class="field"><label>Chemo day (Day 1)</label><input name="day1" type="date" value="{{ cycle.day1 }}" required><p class="hint">Moving Day 1 moves every scheduled dose in this cycle.</p></div>
+          <div class="field"><label>Treatment name</label><input name="regimen" type="text" value="{{ cycle.regimen or '' }}"></div>
+          <div class="field"><label>Notes</label><textarea name="notes">{{ cycle.notes or '' }}</textarea></div>
+          <button class="btn btn-primary" type="submit">Save</button>
+        </form>
+      </details>
+      <form method="post" action="/cycles/{{ cycle.id }}/delete" data-confirm="Delete cycle {{ cycle.number }}? Logged doses and symptoms are kept.">
+        <button class="btn btn-danger btn-block" type="submit">{{ icon("trash") }}Delete cycle</button>
+      </form>
+    </aside>
+  </div>
+</div>
+{% endblock %}

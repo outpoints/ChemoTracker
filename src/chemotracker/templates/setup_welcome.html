@@ -1,0 +1,16 @@
+{% extends "setup_base.html" %}
+{% block title %}Welcome · ChemoTracker{% endblock %}
+{% block setup %}
+{% from "_ui.html" import icon %}
+<h1>Let's set up your medicines</h1>
+<p class="lead">ChemoTracker shows what to take today, when an as-needed medicine is OK again, and keeps a log of how you feel for your care team.</p>
+<p class="meta" style="margin-top: var(--s3)">Helping someone else? Answer for them. Everything here can be changed later.</p>
+<ol class="setup-steps">
+  <li><div><div class="t">Pick your medicines</div><div class="d">Tick them in a list of common chemo and supportive medicines, or type one in.</div></div></li>
+  <li><div><div class="t">Copy each pharmacy label</div><div class="d">Strength, dose, directions, and which days of the cycle you take it.</div></div></li>
+  <li><div><div class="t">Set chemo day</div><div class="d">The date of Day 1. The schedule is worked out from there.</div></div></li>
+  <li><div><div class="t">Add your care team</div><div class="d">Phone numbers and your fever line, so they're one tap away.</div></div></li>
+</ol>
+<p class="meta">Have your pharmacy bags or the clinic's medicine sheet nearby. It takes about 5 minutes.</p>
+<div class="setup-nav single"><a class="btn btn-primary btn-lg" href="/setup/medicines">Start {{ icon("arrow-right") }}</a></div>
+{% endblock %}

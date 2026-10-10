@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Add a medicine · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon %}
+<div class="page page-narrow">
+  <a class="btn btn-quiet" href="/medicines" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Medicines</a>
+  <div class="page-head" style="margin-top: var(--s2)">
+    <div><h1>Add a medicine</h1><p class="sub">Tick it in the list, or type one that isn't listed.</p></div>
+  </div>
+  <form method="post" action="/medicines/add">
+    {% include "_picker.html" with context %}
+    <section class="card card-pad" style="margin-top: var(--s4)">
+      <div class="field">
+        <label for="custom_name">Not in the list?</label>
+        <input id="custom_name" name="custom_name" type="text" placeholder="Name as it appears on the label">
+        <p class="hint">You'll copy its label and schedule on the next screen.</p>
+      </div>
+    </section>
+    <div style="position: sticky; bottom: calc(80px + env(safe-area-inset-bottom)); margin-top: var(--s4)">
+      <button class="btn btn-primary btn-lg btn-block" type="submit">Add</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

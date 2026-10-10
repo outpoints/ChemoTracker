@@ -1,0 +1,24 @@
+{% extends "setup_base.html" %}
+{% block title %}Care team · ChemoTracker{% endblock %}
+{% block setup %}
+{% from "_ui.html" import icon %}
+<h1>Your care team</h1>
+<p class="lead">So the right number is one tap away when something feels wrong.</p>
+<form class="form" method="post" action="/setup/team" style="margin-top: var(--s6)">
+  {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
+  <div class="card card-pad form">
+    <div class="field"><label for="clinic_name">Clinic <span class="meta">(optional)</span></label><input id="clinic_name" name="clinic_name" type="text" value="{{ prefs.clinic_name }}"></div>
+    <div class="field-row">
+      <div class="field"><label for="clinic_phone">Clinic phone</label><input id="clinic_phone" name="clinic_phone" type="tel" value="{{ prefs.clinic_phone }}" autocomplete="off"></div>
+      <div class="field"><label for="after_hours_phone">After-hours phone</label><input id="after_hours_phone" name="after_hours_phone" type="tel" value="{{ prefs.after_hours_phone }}" autocomplete="off"></div>
+    </div>
+    <div class="field"><label for="fever_f">Fever line (°F)</label><input id="fever_f" name="fever_f" type="number" step="0.1" min="97" max="104" value="{{ prefs.fever_f }}" style="max-width: 10ch"><p class="hint">Use the temperature on your care team's instructions.</p></div>
+    <div class="field"><label for="call_if">When to call (one per line)</label><textarea id="call_if" name="call_if" rows="4">{{ prefs.call_if }}</textarea></div>
+    <div class="field"><label for="patient_name">Name on the report <span class="meta">(optional)</span></label><input id="patient_name" name="patient_name" type="text" value="{{ prefs.patient_name }}" autocomplete="off"></div>
+  </div>
+  <div class="setup-nav">
+    <a class="btn btn-secondary btn-lg" href="/setup/cycle">{{ icon("arrow-left") }}Back</a>
+    <button class="btn btn-primary btn-lg" type="submit">Finish {{ icon("check") }}</button>
+  </div>
+</form>
+{% endblock %}

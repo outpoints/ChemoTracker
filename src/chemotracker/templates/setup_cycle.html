@@ -1,0 +1,22 @@
+{% extends "setup_base.html" %}
+{% block title %}Chemo day · ChemoTracker{% endblock %}
+{% block setup %}
+{% from "_ui.html" import icon %}
+<h1>When is chemo day?</h1>
+<p class="lead">Day 1 is the day of the infusion. Every medicine's days are counted from it.</p>
+<form class="form" method="post" action="/setup/cycle" style="margin-top: var(--s6)">
+  {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
+  <div class="card card-pad form">
+    <div class="field"><label for="day1">Chemo day (Day 1) of this cycle</label><input id="day1" name="day1" type="date" value="{{ values.day1 }}" required></div>
+    <div class="field-row">
+      <div class="field"><label for="number">Which cycle is this?</label><input id="number" name="number" type="number" min="1" max="99" value="{{ values.number }}" required><p class="hint">1 if you're just starting.</p></div>
+      <div class="field"><label for="length_days">Days in each cycle</label><input id="length_days" name="length_days" type="number" min="1" max="90" value="{{ values.length_days }}" required><p class="hint">Every 2 weeks = 14. Every 3 weeks = 21. Weekly = 7.</p></div>
+    </div>
+    <div class="field"><label for="regimen">Treatment name <span class="meta">(optional)</span></label><input id="regimen" name="regimen" type="text" value="{{ values.regimen or '' }}" placeholder="For example: AC-T"></div>
+  </div>
+  <div class="setup-nav">
+    <a class="btn btn-secondary btn-lg" href="/setup/label/{{ [count - 1, 0] | max }}">{{ icon("arrow-left") }}Back</a>
+    <button class="btn btn-primary btn-lg" type="submit">Next {{ icon("arrow-right") }}</button>
+  </div>
+</form>
+{% endblock %}

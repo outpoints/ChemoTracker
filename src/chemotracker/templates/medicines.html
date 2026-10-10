@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Medicines · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon, route_icon %}
+<div class="page page-narrow">
+  <div class="page-head">
+    <div>
+      <h1>Medicines</h1>
+      <p class="sub">What each pharmacy label says, and when each one is used.</p>
+    </div>
+    <a class="btn btn-primary" href="/medicines/add">{{ icon("plus") }}Add a medicine</a>
+  </div>
+  {% set active_meds = meds | selectattr("active") | list %}
+  {% set stopped = meds | rejectattr("active") | list %}
+  {% if active_meds %}
+  <div class="card">
+    <ul class="list">
+      {% for m in active_meds %}
+      {% set ps = plans[m.id] %}
+      <li>
+        <a class="list-item" href="/medicines/{{ m.id }}">
+          <span style="color: var(--teal)">{{ route_icon(m.route) }}</span>
+          <span class="grow">
+            <span class="title">{{ m.name }}</span>{% if m.brand %} <span class="meta">({{ m.brand }})</span>{% endif %}
+            {% if m.strength or m.dose %}<br><span class="meta">{{ [m.strength, m.dose] | select | join(" · ") }}</span>{% endif %}
+            <br><span class="meta">
+              {%- for p in ps %}{{ kind_names[p.kind] }}, {{ days_text(p.start_day, p.end_day) | lower }}{% if p.times %} at {{ plan_times(p) | map("fmt_time") | join(", ") }}{% endif %}{% if not loop.last %}; {% endif %}{% else %}No schedule yet{% endfor -%}
+            </span>
+            {% if not m.strength and not m.directions %}<br><span class="pill pill-late" style="margin-top: var(--s1)">Label not copied yet</span>{% endif %}
+          </span>
+          {{ icon("chevron-right", "chev") }}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% else %}
+  <div class="card empty"><h2>No medicines yet</h2><p>Add the medicines on your pharmacy labels.</p><a class="btn btn-primary" href="/medicines/add">Add a medicine</a></div>
+  {% endif %}
+
+  {% if stopped %}
+  <div class="section-title"><h2>Stopped</h2><span class="meta">History is kept</span></div>
+  <div class="card">
+    <ul class="list">
+      {% for m in stopped %}
+      <li><a class="list-item" href="/medicines/{{ m.id }}"><span class="grow"><span class="title" style="color: var(--text-2)">{{ m.name }}</span>{% if m.strength %} <span class="meta">{{ m.strength }}</span>{% endif %}</span>{{ icon("chevron-right", "chev") }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

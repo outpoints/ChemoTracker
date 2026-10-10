@@ -1,0 +1,26 @@
+services:
+  chemotracker:
+    build: .
+    image: chemotracker:local
+    container_name: chemotracker
+    restart: unless-stopped
+    # Runs as this uid/gid. On Linux set CHEMO_UID/CHEMO_GID to the owner of ./data (run `id -u` / `id -g`).
+    user: "${CHEMO_UID:-10001}:${CHEMO_GID:-10001}"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: ${TZ:-America/Los_Angeles}
+    ports:
+      # Reachable from other devices on your home network. Use "127.0.0.1:8000:8000" for this computer only.
+      - "${CHEMO_PUBLISH_PORT:-8000}:8000"
+    volumes:
+      - ./data:/data
+      - ${CHEMO_BACKUP_HOST_DIR:-./backups}:/backups
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

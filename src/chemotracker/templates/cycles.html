@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Cycles · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon, ring_svg, ring_legend %}
+<div class="page page-narrow">
+  <div class="page-head">
+    <div>
+      <h1>Cycles</h1>
+      <p class="sub">Each cycle starts on chemo day (Day 1). Medicines follow their day schedules from there.</p>
+    </div>
+  </div>
+
+  {% if current %}
+  <a class="card card-pad ring-link" href="/cycles/{{ current.id }}" style="display: grid; gap: var(--s4)">
+    <div class="spread"><h2>Cycle {{ current.number }}{% if current.regimen %} <span class="meta">· {{ current.regimen }}</span>{% endif %}</h2><span class="meta">See the full sheet {{ icon("chevron-right") }}</span></div>
+    {{ ring_svg(ring, 0, current, 260) }}
+    {{ ring_legend() }}
+  </a>
+  {% endif %}
+
+  <div class="section-title"><h2>All cycles</h2></div>
+  <div class="card">
+    {% if cycles %}
+    <ul class="list">
+      {% for c in cycles | reverse %}
+      <li><a class="list-item" href="/cycles/{{ c.id }}">
+        <span class="time" style="font-weight: 700; color: var(--ink); min-width: 2.5rem">#{{ c.number }}</span>
+        <span class="grow"><span class="title">Day 1 {{ fmt_day(parse_local(c.day1 ~ " 00:00").date()) }}</span><br><span class="meta">{{ c.length_days }} days{% if c.regimen %} · {{ c.regimen }}{% endif %}</span></span>
+        {% if current and c.id == current.id %}<span class="pill pill-ok">Now</span>{% endif %}
+        {{ icon("chevron-right", "chev") }}
+      </a></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="empty"><p>No cycles yet.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="section-title"><h2>Add the next cycle</h2></div>
+  <form class="card card-pad form" method="post" action="/cycles">
+    <div class="field-row three">
+      <div class="field"><label for="number">Cycle number</label><input id="number" name="number" type="number" min="1" max="99" value="{{ defaults.number }}" required></div>
+      <div class="field"><label for="day1">Chemo day (Day 1)</label><input id="day1" name="day1" type="date" value="{{ defaults.day1 }}" required></div>
+      <div class="field"><label for="length_days">Days in the cycle</label><input id="length_days" name="length_days" type="number" min="1" max="90" value="{{ defaults.length_days }}" required></div>
+    </div>
+    <div class="field"><label for="regimen">Treatment name <span class="meta">(optional)</span></label><input id="regimen" name="regimen" type="text" value="{{ defaults.regimen }}" placeholder="For example: AC (doxorubicin + cyclophosphamide)"></div>
+    <p class="hint">If chemo gets moved, change Day 1 here and every dose shifts with it.</p>
+    <button class="btn btn-primary" type="submit">{{ icon("plus") }}Add cycle</button>
+  </form>
+</div>
+{% endblock %}

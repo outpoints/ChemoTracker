@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Sign in · ChemoTracker{% endblock %}
+{% block shell %}
+<div class="login">
+  <span class="brand"><img class="brand-mark" src="/static/icon.svg" alt="">ChemoTracker</span>
+  <form class="card card-pad form" method="post" action="/login" style="margin-top: var(--s6)">
+    <h1 style="font-size: var(--fs-lg)">Family password</h1>
+    {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
+    <input type="hidden" name="next" value="{{ nxt }}">
+    <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus></div>
+    <button class="btn btn-primary btn-block btn-lg" type="submit">Sign in</button>
+  </form>
+</div>
+{% endblock %}

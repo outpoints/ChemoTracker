@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Saved · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon, call_card, countdown %}
+<div class="page page-narrow stack">
+  {% if concerning %}
+  {% if sym.kind == "temp" %}
+  {{ call_card(prefs, urgent=True, title="At or above your fever line. Call your care team now.") }}
+  {% else %}
+  {{ call_card(prefs, urgent=True, title="That sounds hard. Your care team wants to hear about this.") }}
+  {% endif %}
+  {% endif %}
+
+  <div class="card card-pad">
+    <div class="row">
+      {{ icon("check", "muted") }}
+      <div class="grow">
+        <div class="meta">Saved at {{ fmt_time(entry.logged_at) }}</div>
+        <h1 style="font-size: var(--fs-lg)">{{ entry.label if entry.symptom == "other" else sym.name }} · {{ sym.describe(entry.severity, entry.value) }}</h1>
+      </div>
+      <a class="btn btn-quiet btn-sm" href="/symptoms/{{ entry.id }}">Edit</a>
+    </div>
+  </div>
+
+  {% if meds %}
+  <section>
+    <div class="section-title" style="margin-top: var(--s4)"><h2>Your as-needed medicines for {{ sym.name | lower }}</h2></div>
+    <p class="meta" style="margin-bottom: var(--s3)">From your medicine list. Follow the label and your care team's directions.</p>
+    <div class="compartment" data-period="prn"><div class="c-body">
+      {% for an in meds %}
+      {% set ok = an.available(now) %}
+      <div class="prn-row">
+        <div>
+          <div class="dose-name">{{ an.name }}{% if an.brand %} <span class="meta">({{ an.brand }})</span>{% endif %}</div>
+          <div class="dose-detail">{{ [an.strength, an.dose] | select | join(" · ") }}{% if an.gap_hours %} · every {{ an.gap_hours | round(1) | string | replace(".0", "") }} hr{% endif %}</div>
+          {% if an.last_at %}<div class="dose-detail">Last taken {{ fmt_rel(an.last_at.date(), today) | lower }} {{ fmt_time(an.last_at) }}</div>{% endif %}
+          {% if not an.scheduled_today %}<div class="dose-detail">Your schedule has it on {{ an.schedule_note or "other days" }}. Check with your care team before taking it today.</div>{% endif %}
+        </div>
+        <div class="prn-when {{ 'ok' if ok }}">{{ countdown(an, now) }}<div class="txt"><strong data-status>{{ an.status_text(now) }}</strong><span data-wait>{{ an.wait_text(now) }}</span></div></div>
+        {% if an.scheduled_today %}
+        <div class="prn-actions">
+          <form method="post" action="/dose/quick">
+            <input type="hidden" name="medication_id" value="{{ an.medication_id }}">
+            <input type="hidden" name="reason" value="{{ sym.name }}">
+            <input type="hidden" name="back" value="/">
+            <button class="btn {{ 'btn-primary' if ok else 'btn-secondary' }}" type="submit" data-prn-button>{{ icon("check") }}Took one now</button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div></div>
+  </section>
+  {% endif %}
+
+  <div class="field-row">
+    <a class="btn btn-secondary btn-lg" href="/symptoms#all">Log another symptom</a>
+    <a class="btn btn-primary btn-lg" href="/">Back to Today</a>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{{ med.name }} · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon, med_info %}
+<div class="page">
+  <a class="btn btn-quiet" href="/medicines" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Medicines</a>
+  <div class="page-head" style="margin-top: var(--s2)">
+    <div>
+      <div class="eyebrow">{{ category_names.get(med.category, "Your medicine") }}{% if not med.active %} · stopped{% endif %}</div>
+      <h1>{{ med.name }}{% if med.brand %} <span class="muted" style="font-weight: 400">({{ med.brand }})</span>{% endif %}</h1>
+      {% if info %}<p class="sub">{{ info.family }}</p>{% endif %}
+    </div>
+  </div>
+
+  <div class="two-col">
+    <div class="stack-lg">
+      <form class="card card-pad form" method="post" action="/medicines/{{ med.id }}">
+        <div class="spread"><h2>Pharmacy label</h2>{% if is_new %}<span class="pill pill-due">Copy the label</span>{% endif %}</div>
+        <div class="field-row">
+          <div class="field"><label for="name">Name</label><input id="name" name="name" type="text" value="{{ med.name }}" required></div>
+          <div class="field"><label for="brand">Brand <span class="meta">(optional)</span></label><input id="brand" name="brand" type="text" value="{{ med.brand or '' }}"></div>
+        </div>
+        <div class="field-row">
+          <div class="field"><label for="strength">Strength</label><input id="strength" name="strength" type="text" value="{{ med.strength or '' }}" placeholder="For example: 25 mg tablet"></div>
+          <div class="field"><label for="dose">Dose</label><input id="dose" name="dose" type="text" value="{{ med.dose or '' }}" placeholder="For example: 1 tablet (8 mg)"></div>
+        </div>
+        <div class="field">
+          <label for="directions">Directions on the label</label>
+          <textarea id="directions" name="directions" placeholder="Copy it word for word, for example: Take 1 tablet by mouth every 8 hours">{{ med.directions or '' }}</textarea>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="gap">Hours between doses <span class="meta">(as needed)</span></label>
+            <input id="gap" name="min_hours_between" type="number" inputmode="decimal" min="0.25" max="168" step="0.25" value="{{ (med.min_hours_between | string | replace('.0', '')) if med.min_hours_between else '' }}" placeholder="For example: 8">
+            <p class="hint">"Every 8 hours" means 8. Used to show when the next one is OK.</p>
+          </div>
+          <div class="field">
+            <label for="max">Most doses in a day <span class="meta">(optional)</span></label>
+            <input id="max" name="max_per_day" type="number" inputmode="numeric" min="1" max="48" value="{{ med.max_per_day or '' }}">
+          </div>
+        </div>
+        <div class="field">
+          <label for="route">How it goes in</label>
+          <select id="route" name="route">{% for k, v in route_names.items() %}<option value="{{ k }}" {% if med.route == k %}selected{% endif %}>{{ v }}</option>{% endfor %}</select>
+        </div>
+        <div class="field"><label for="notes">Notes <span class="meta">(optional)</span></label><textarea id="notes" name="notes">{{ med.notes or '' }}</textarea></div>
+        <button class="btn btn-primary" type="submit">{{ icon("check") }}Save label</button>
+      </form>
+
+      <section id="plans">
+        <div class="section-title" style="margin-top: 0"><h2>When it's used</h2></div>
+        <div class="stack">
+          {% for p in plans %}
+          <form class="card card-pad form" method="post" action="/plans/{{ p.id }}">
+            <input type="hidden" name="back" value="/medicines/{{ med.id }}#plans">
+            <div class="spread"><h3>{{ kind_names[p.kind] }} · {{ days_text(p.start_day, p.end_day) }}</h3>{% if plans | length > 1 %}<span class="badge">Schedule {{ loop.index }}</span>{% endif %}</div>
+            {% with plan=p, show_cycles=True %}{% include "_plan_form.html" %}{% endwith %}
+            <div class="row">
+              <button class="btn btn-primary" type="submit">Save schedule</button>
+              <button class="btn btn-danger" type="submit" formaction="/plans/{{ p.id }}/delete" data-confirm-btn="Remove this schedule? Logged doses are kept.">Remove</button>
+            </div>
+          </form>
+          {% endfor %}
+          <details class="card more" style="padding: 0 var(--s5)" {% if not plans %}open{% endif %}>
+            <summary>{{ icon("plus") }}&nbsp;{{ "Add a schedule" if not plans else "Add another schedule" }}</summary>
+            <form class="form" method="post" action="/medicines/{{ med.id }}/plans" style="padding-bottom: var(--s5)">
+              <p class="hint">For example, a second stretch of days, or different times on chemo day.</p>
+              {% with plan=None, show_cycles=True %}{% include "_plan_form.html" %}{% endwith %}
+              <button class="btn btn-primary" type="submit">Add schedule</button>
+            </form>
+          </details>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title"><h2>Recent doses</h2>{% if med.active %}<a class="btn btn-soft btn-sm" href="/dose/new?med={{ med.id }}">{{ icon("plus") }}Log a dose</a>{% endif %}</div>
+        <div class="card">
+          {% if recent %}
+          <ul class="timeline">
+            {% for r in recent %}
+            <li>
+              <span class="t">{{ fmt_time(r.taken_at or r.slot) if (r.taken_at or (r.slot and r.slot | length > 10)) else "" }}</span>
+              <span class="dot {{ 'is-skip' if r.status == 'skipped' else 'is-dose' }}"></span>
+              <div>
+                <div class="what">{{ fmt_rel(parse_local((r.taken_at or r.slot)[:10] ~ " 00:00").date(), today) }} · {{ "Taken" if r.status == "taken" else "Skipped" }}{% if r.dose %} <span class="meta">{{ r.dose }}</span>{% endif %}</div>
+                {% if r.helped or r.dose_feel or r.side_effects %}<div class="note">{% if r.helped %}Helped: {{ helped_names[r.helped] }}{% endif %}{% if r.dose_feel %} · Dose {{ feel_names[r.dose_feel] | lower }}{% endif %}{% if r.side_effects %} · {{ r.side_effects }}{% endif %}</div>{% endif %}
+              </div>
+              <a class="btn btn-quiet btn-sm" href="/dose/{{ r.id }}" aria-label="Edit">{{ icon("edit") }}</a>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <div class="empty"><p>No doses logged yet.</p></div>
+          {% endif %}
+        </div>
+      </section>
+    </div>
+
+    <aside class="stack">
+      {% if info %}
+      <div class="card card-pad">
+        <h2>About {{ info.generic }}</h2>
+        {% if info.brands %}<p class="meta" style="margin-top: var(--s1)">Also sold as {{ info.brands | join(", ") }}</p>{% endif %}
+        {{ med_info(info) }}
+      </div>
+      {% else %}
+      <div class="card card-pad"><h2>About this medicine</h2><p class="meta" style="margin-top: var(--s2)">This one isn't in the built-in list, so there's no summary. Ask the pharmacist for the printed information sheet.</p></div>
+      {% endif %}
+
+      <div class="card card-pad danger-zone stack-sm">
+        {% if med.active %}
+        <form method="post" action="/medicines/{{ med.id }}/active"><input type="hidden" name="active" value="0">
+          <button class="btn btn-secondary btn-block" type="submit">Stop this medicine</button></form>
+        <p class="hint">Hides it from Today. Its history stays in the report.</p>
+        {% else %}
+        <form method="post" action="/medicines/{{ med.id }}/active"><input type="hidden" name="active" value="1">
+          <button class="btn btn-primary btn-block" type="submit">Start again</button></form>
+        {% endif %}
+        <form method="post" action="/medicines/{{ med.id }}/delete" data-confirm="Delete {{ med.name }} and every dose logged for it? This can't be undone.">
+          <button class="btn btn-danger btn-block" type="submit">{{ icon("trash") }}Delete medicine and history</button>
+        </form>
+      </div>
+    </aside>
+  </div>
+</div>
+{% endblock %}

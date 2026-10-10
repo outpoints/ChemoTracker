@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}{{ sym.name }} · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon %}
+{% set v = values or {} %}
+{% set val = v.get("value") %}{% set sev = v.get("severity") %}{% set notes = v.get("notes") or "" %}
+<div class="page page-narrow">
+  <a class="btn btn-quiet" href="{{ '/symptoms' if entry else '/' }}" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Back</a>
+  <div class="page-head" style="margin-top: var(--s2)">
+    <div>
+      <div class="eyebrow">{{ "Edit entry" if entry else sym.name }}</div>
+      <h1>{{ sym.question }}</h1>
+    </div>
+  </div>
+
+  <form class="form" method="post" action="{{ '/symptoms/' ~ entry.id if entry else '/symptoms/new' }}">
+    {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
+    <input type="hidden" name="symptom" value="{{ sym.key }}">
+
+    {% if sym.key == "other" %}
+    <div class="field">
+      <label for="label">What is it?</label>
+      <input id="label" name="label" type="text" value="{{ v.get('label') or '' }}" placeholder="For example: hiccups, blurry vision" required>
+    </div>
+    {% endif %}
+
+    {% if sym.kind == "severity" %}
+    <fieldset>
+      <legend class="visually-hidden">How bad</legend>
+      <div class="sev-options">
+        {% set current = (sev | string) if sev not in (none, "") else "" %}
+        <label class="sev-option" data-s="0"><input type="radio" name="severity" value="0" {% if current == "0" %}checked{% endif %} required><i></i><span><span class="t">None</span><br><span class="d">Not now, or it's gone</span></span></label>
+        {% for d in sym.levels %}
+        <label class="sev-option" data-s="{{ loop.index }}"><input type="radio" name="severity" value="{{ loop.index }}" {% if current == loop.index | string %}checked{% endif %}><i></i><span><span class="t">{{ severity_names[loop.index] }}</span><br><span class="d">{{ d }}</span></span></label>
+        {% endfor %}
+      </div>
+    </fieldset>
+    {% elif sym.kind == "temp" %}
+    <div class="field">
+      <label for="value">Temperature (°F)</label>
+      <input class="big-number" id="value" name="value" type="number" inputmode="decimal" step="0.1" min="90" max="110" value="{{ val if val is not none else '' }}" placeholder="98.6" required autofocus>
+      <p class="hint">Your care team's fever line is {{ fever_f }} °F.</p>
+    </div>
+    {% elif sym.kind == "pain" %}
+    <fieldset>
+      <legend>0 is no pain, 10 is the worst you can imagine</legend>
+      <div class="scale">
+        {% for n in range(0, 11) %}
+        <label><input type="radio" name="value" value="{{ n }}" {% if val is not none and val | string in (n | string, n ~ ".0") %}checked{% endif %} required>{{ n }}</label>
+        {% endfor %}
+      </div>
+      <div class="scale-ends"><span>No pain</span><span>Worst</span></div>
+    </fieldset>
+    <div class="field">
+      <label for="notes-where">Where does it hurt? <span class="meta">(optional)</span></label>
+      <input id="notes-where" name="notes" type="text" value="{{ notes }}" placeholder="For example: lower back, joints">
+    </div>
+    {% else %}
+    <div class="field">
+      <span class="label">How many times?</span>
+      <div class="stepper">
+        <button class="btn btn-secondary" type="button" data-step="-1" aria-label="One fewer">{{ icon("minus") }}</button>
+        <input id="value" name="value" type="number" inputmode="numeric" min="0" max="99" value="{{ (val | float | int) if val not in (none, '') else 1 }}" required>
+        <button class="btn btn-secondary" type="button" data-step="1" aria-label="One more">{{ icon("plus") }}</button>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if sym.kind != "pain" %}
+    <div class="field">
+      <label for="notes">Anything else? <span class="meta">(optional)</span></label>
+      <textarea id="notes" name="notes" placeholder="What helped, what made it worse, what you ate…">{{ notes }}</textarea>
+    </div>
+    {% endif %}
+
+    <details class="more" {% if entry %}open{% endif %}>
+      <summary>{{ "Time" if entry else "It started earlier" }}</summary>
+      <div class="field">
+        <label for="logged_at">When</label>
+        <input id="logged_at" name="logged_at" type="datetime-local" value="{{ (v.get('logged_at') or '') | replace(' ', 'T') }}">
+      </div>
+    </details>
+
+    <button class="btn btn-primary btn-lg btn-block" type="submit">{{ icon("check") }}Save</button>
+  </form>
+
+  {% if entry %}
+  <form method="post" action="/symptoms/{{ entry.id }}/delete" data-confirm="Delete this entry?" style="margin-top: var(--s4)">
+    <input type="hidden" name="back" value="/symptoms?d={{ entry.logged_at[:10] }}">
+    <button class="btn btn-danger btn-block" type="submit">{{ icon("trash") }}Delete entry</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}

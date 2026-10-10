@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Report for your care team · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon %}
+{% set taken = doses | selectattr("status", "equalto", "Taken") | list %}
+{% set missing = doses | selectattr("status", "equalto", "Not logged") | list %}
+{% set skipped = doses | selectattr("status", "equalto", "Skipped") | list %}
+<div class="page page-narrow">
+  <div class="page-head">
+    <div>
+      <h1>Report for your care team</h1>
+      <p class="sub">An Excel file with a summary, a day-by-day view, every dose, every symptom, and a cycle sheet like the clinic's.</p>
+    </div>
+  </div>
+
+  <form class="card card-pad form" method="get" action="/report">
+    <div class="field-row">
+      <div class="field">
+        <label for="cycle">Cycle</label>
+        <select id="cycle" name="cycle" data-autosubmit>
+          <option value="">Pick dates instead</option>
+          {% for c in cycles | reverse %}<option value="{{ c.id }}" {% if cycle and cycle.id == c.id %}selected{% endif %}>Cycle {{ c.number }} · Day 1 {{ fmt_day(parse_local(c.day1 ~ " 00:00").date()) }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="field-row" style="gap: var(--s3)">
+        <div class="field"><label for="start">From</label><input id="start" name="start" type="date" value="{{ start.isoformat() }}"></div>
+        <div class="field"><label for="end">To</label><input id="end" name="end" type="date" value="{{ end.isoformat() }}"></div>
+      </div>
+    </div>
+    <button class="btn btn-secondary" type="submit">Update</button>
+  </form>
+
+  <div class="card card-pad" style="margin-top: var(--s4)">
+    <div class="meta">{{ fmt_day(start) }} to {{ fmt_day(end) }}</div>
+    <dl class="kv" style="margin-top: var(--s3)">
+      <dt>Doses taken</dt><dd>{{ taken | length }}</dd>
+      <dt>Skipped</dt><dd>{{ skipped | length }}</dd>
+      <dt>Planned but not logged</dt><dd>{{ missing | length }}</dd>
+      <dt>Symptom entries</dt><dd>{{ syms | length }}</dd>
+      <dt>Dose felt too strong / not enough</dt><dd>{{ taken | selectattr("dose_feel", "equalto", "Too strong") | list | length }} / {{ taken | selectattr("dose_feel", "equalto", "Not enough") | list | length }}</dd>
+    </dl>
+    <div class="row-wrap" style="margin-top: var(--s5)">
+      <a class="btn btn-primary btn-lg" href="/report.xlsx?{{ query }}">{{ icon("download") }}Download Excel report</a>
+      <a class="btn btn-secondary" href="/report-doses.csv?{{ query }}">Doses (CSV)</a>
+      <a class="btn btn-secondary" href="/report-symptoms.csv?{{ query }}">Symptoms (CSV)</a>
+    </div>
+    <p class="hint" style="margin-top: var(--s3)">Email it, print it, or bring it on a phone to the next appointment. CSV files open in any spreadsheet app.</p>
+  </div>
+
+  <div class="section-title"><h2>Doses</h2><span class="meta">Newest first</span></div>
+  <div class="card">
+    {% if doses %}
+    <ul class="timeline">
+      {% for r in doses | reverse %}{% if loop.index <= 40 %}
+      <li>
+        <span class="t">{{ r.when.strftime("%b %d") if r.when else "" }}</span>
+        <span class="dot {{ 'is-miss' if r.status == 'Not logged' else ('is-skip' if r.status == 'Skipped' else 'is-dose') }}"></span>
+        <div>
+          <div class="what">{{ r.medicine }} <span class="meta">{{ r.status }}{% if r.status == "Taken" %} {{ fmt_time(r.when) }}{% elif r.planned %} · planned {{ fmt_time(r.planned) }}{% endif %}</span></div>
+          {% if r.helped or r.dose_feel or r.side_effects %}<div class="note">{{ [("Helped: " ~ r.helped) if r.helped, ("Dose " ~ r.dose_feel | lower) if r.dose_feel, r.side_effects] | select | join(" · ") }}</div>{% endif %}
+        </div>
+        <span></span>
+      </li>
+      {% endif %}{% endfor %}
+    </ul>
+    {% else %}<div class="empty"><p>No doses in this period.</p></div>{% endif %}
+  </div>
+
+  <div class="section-title"><h2>Symptoms</h2></div>
+  <div class="card">
+    {% if syms %}
+    <ul class="timeline">
+      {% for s in syms | reverse %}{% if loop.index <= 40 %}
+      <li>
+        <span class="t">{{ s.when.strftime("%b %d") }}</span>
+        <span class="dot s{{ s.score }}"></span>
+        <div><div class="what">{{ s.symptom }} <span class="meta">{{ s.reading or s.severity }} · {{ fmt_time(s.when) }}</span></div>{% if s.notes %}<div class="note">{{ s.notes }}</div>{% endif %}</div>
+        <span></span>
+      </li>
+      {% endif %}{% endfor %}
+    </ul>
+    {% else %}<div class="empty"><p>No symptoms in this period.</p></div>{% endif %}
+  </div>
+</div>
+{% endblock %}

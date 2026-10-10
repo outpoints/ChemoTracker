@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}How did it go? · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon %}
+<div class="page page-narrow">
+  <a class="btn btn-quiet" href="/" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Today</a>
+  <div class="page-head" style="margin-top: var(--s2)">
+    <div>
+      <div class="eyebrow">{% if log.status == "taken" %}Taken {{ fmt_rel(parse_local(log.taken_at).date(), today) | lower }} at {{ fmt_time(log.taken_at) }}{% else %}Skipped{% endif %}</div>
+      <h1>{{ log.med_name }}{% if log.med_strength %} <span class="muted" style="font-weight: 400">{{ log.med_strength }}</span>{% endif %}</h1>
+      {% if saved %}<p class="sub">Logged. Come back later to say how it went, or answer now.</p>{% endif %}
+    </div>
+  </div>
+
+  <form class="form card card-pad" method="post" action="/dose/{{ log.id }}">
+    {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
+    <input type="hidden" name="back" value="/">
+    <input type="hidden" name="status" value="{{ log.status }}">
+
+    {% if log.status == "taken" %}
+    <fieldset>
+      <legend>Did it help?</legend>
+      <div class="segmented">
+        {% for k, v in helped_names.items() %}<label><input type="radio" name="helped" value="{{ k }}" {% if log.helped == k %}checked{% endif %}>{{ v }}</label>{% endfor %}
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>How was the dose?</legend>
+      <div class="segmented">
+        {% for k, v in feel_names.items() %}<label><input type="radio" name="dose_feel" value="{{ k }}" {% if log.dose_feel == k %}checked{% endif %}>{{ v }}</label>{% endfor %}
+      </div>
+      <p class="hint">This goes to your care team. Don't change a dose on your own. Call them if it feels too strong or not enough.</p>
+    </fieldset>
+
+    <fieldset>
+      <legend>Any side effects? <span class="meta">(optional)</span></legend>
+      {% set have = (log.side_effects or "").split(", ") %}
+      <div class="row-wrap">
+        {% for c in chips %}
+        <label class="check" style="min-height: 44px; padding: 0 var(--s3); background: var(--surface-2); border-radius: var(--r-md); align-items: center">
+          <input type="checkbox" name="side_effects[]" value="{{ c }}" {% if c in have %}checked{% endif %}><span class="t">{{ c }}</span>
+        </label>
+        {% endfor %}
+      </div>
+      {% set others = have | reject("in", chips) | select | join(", ") %}
+      <input style="margin-top: var(--s3)" type="text" name="side_effects_other" value="{{ others }}" placeholder="Something else">
+    </fieldset>
+
+    <div class="field">
+      <label for="reason">Taken for <span class="meta">(optional)</span></label>
+      <input id="reason" name="reason" type="text" value="{{ log.reason or '' }}" placeholder="For example: nausea after lunch">
+    </div>
+    {% endif %}
+
+    <div class="field">
+      <label for="notes">Notes <span class="meta">(optional)</span></label>
+      <textarea id="notes" name="notes">{{ log.notes or '' }}</textarea>
+    </div>
+
+    <details class="more">
+      <summary>Change time or dose</summary>
+      <div class="field-row">
+        {% if log.status == "taken" %}
+        <div class="field"><label for="taken_at">Time taken</label><input id="taken_at" name="taken_at" type="datetime-local" value="{{ (log.taken_at or '') | replace(' ', 'T') }}"></div>
+        {% endif %}
+        <div class="field"><label for="dose">Dose</label><input id="dose" name="dose" type="text" value="{{ log.dose or log.med_dose or '' }}"></div>
+      </div>
+    </details>
+
+    <button class="btn btn-primary btn-lg btn-block" type="submit">{{ icon("check") }}Save</button>
+  </form>
+
+  {% if info %}
+  <details class="card more" style="margin-top: var(--s4); padding: 0 var(--s5)">
+    <summary>Side effects to watch for with {{ info.generic }}</summary>
+    <div class="info" style="padding-bottom: var(--s5)">
+      <ul>{% for x in info.common %}<li>{{ x }}</li>{% endfor %}</ul>
+      <h3>Call your care team if</h3>
+      <ul class="call-list">{% for x in info.call %}<li>{{ x }}</li>{% endfor %}</ul>
+    </div>
+  </details>
+  {% endif %}
+
+  <form method="post" action="/dose/{{ log.id }}/delete" data-confirm="Remove this dose from the log?" style="margin-top: var(--s4)">
+    <input type="hidden" name="back" value="/">
+    <button class="btn btn-danger btn-block" type="submit">{{ icon("trash") }}Remove from log</button>
+  </form>
+</div>
+{% endblock %}

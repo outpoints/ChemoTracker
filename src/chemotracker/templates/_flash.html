@@ -1,0 +1,13 @@
+{% from "_ui.html" import icon %}
+{% if flash %}
+<div class="toast" role="status" aria-live="polite">
+  <span class="grow">{{ flash.text }}</span>
+  {% if flash.follow %}<a href="/dose/{{ flash.follow }}">How did it go?</a>{% endif %}
+  {% if flash.undo %}
+  <form class="inline-form" method="post" action="/dose/{{ flash.undo }}/undo">
+    <input type="hidden" name="back" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+    <button type="submit">{{ icon("undo") }}&nbsp;Undo</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
