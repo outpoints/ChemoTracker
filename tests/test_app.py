@@ -385,3 +385,97 @@ def test_install_without_people_prompts_to_add_them(client, cfg):
     client.cookies.clear()
     page = client.get("/")
     assert page.status_code == 200 and "Add who's using ChemoTracker" in page.text
+
+
+def _setup_until_medicines(client, day1, **cycle):
+    client.post("/setup/people", data={"names[]": ["John"], "roles[0]": "patient", "me": "new:0"})
+    data = {"number": "1", "day1": day1.isoformat(), "length_days": "14", "count": "4", "regimen": "AC", **cycle}
+    r = client.post("/setup/cycle", data=data, follow_redirects=False)
+    assert r.headers["location"] == "/setup/medicines", r.text
+
+
+def test_setup_reads_pasted_prescriptions(client, cfg):
+    from chemotracker.web import RX_EXAMPLE
+
+    day1 = today(cfg)
+    _setup_until_medicines(client, day1)
+    page = client.get("/setup/medicines").text
+    assert "Write in your prescriptions" in page and "See an example" in page and "OLANZapine 5MG TAB NORT" in page
+
+    preview = client.post("/rx/preview", data={"rx_text": RX_EXAMPLE})
+    assert preview.status_code == 200
+    html = preview.text
+    assert 'data-keys="ondansetron,prochlorperazine,dexamethasone,olanzapine"' in html
+    assert "Days 2–4" in html and schedule.fmt_day(day1 + timedelta(days=1)) in html  # real dates from chemo day
+    assert "at least 8 hours apart" in html and "guess" in html
+
+    # No-JS path: "Read it" re-renders the page with the preview and ticks the matches.
+    r = client.post("/setup/medicines", data={"rx_text": RX_EXAMPLE, "action": "preview"})
+    assert r.status_code == 200 and "Found 4 medicines" in r.text
+    assert 'value="olanzapine" checked' in r.text
+
+    # Save with olanzapine unticked in the preview, plus one ticked from the list.
+    r = client.post("/setup/medicines", data={"rx_text": RX_EXAMPLE, "rx_seen": "1", "rx_include[]": ["0", "1", "2"],
+                                              "keys[]": ["doxorubicin"]}, follow_redirects=False)
+    assert r.headers["location"] == "/setup/label/0"
+    with session(cfg.db_path) as conn:
+        meds = {m["info_key"]: m for m in store.medications(conn)}
+        assert set(meds) == {"ondansetron", "prochlorperazine", "dexamethasone", "doxorubicin"}
+        dex = meds["dexamethasone"]
+        assert (dex["strength"], dex["dose"]) == ("4 mg tablet", "2 tablets (8 mg)")
+        assert [(p["kind"], p["start_day"], p["end_day"], p["times"]) for p in store.plans(conn, dex["id"])] == \
+            [("scheduled", 2, 4, "08:00")]
+        assert meds["ondansetron"]["min_hours_between"] == 8
+        # The pasted text itself is never stored.
+        dump = " ".join(str(v) for row in conn.execute("SELECT * FROM medications") for v in tuple(row))
+        assert "NORT" not in dump
+
+
+def test_two_part_regimen_and_cycle_scoped_prescriptions(client, cfg):
+    day1 = today(cfg)
+    _setup_until_medicines(client, day1, then_regimen="Paclitaxel", then_count="12", then_length_days="7")
+    with session(cfg.db_path) as conn:
+        cycles = schedule.all_cycles(conn)
+    assert [c["number"] for c in cycles] == list(range(1, 17))
+    assert cycles[3]["day1"] == (day1 + timedelta(days=42)).isoformat()
+    assert cycles[4]["day1"] == (day1 + timedelta(days=56)).isoformat() and cycles[4]["length_days"] == 7
+    assert cycles[15]["regimen"] == "Paclitaxel"
+    text = "Olanzapine 5 mg tab - Take 1 tablet at bedtime on days 1 to 4"
+    html = client.post("/rx/preview", data={"rx_text": text}).text
+    assert "AC · cycles 1–4" in html and "Paclitaxel · cycles 5–16" in html
+    client.post("/setup/medicines", data={"rx_text": text, "rx_seen": "1", "rx_include[]": ["0"], "rx_cycles_0": "1-4"})
+    with session(cfg.db_path) as conn:
+        med = conn.execute("SELECT id FROM medications WHERE info_key = 'olanzapine'").fetchone()
+        plan = store.plans(conn, med["id"])[0]
+    assert (plan["from_cycle"], plan["to_cycle"]) == (1, 4)
+
+
+def test_add_medicine_and_fill_from_label(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    r = client.post("/medicines/add", data={"rx_text": "Lorazepam 0.5 mg tab - Take 1 tablet by mouth every 6 hours as needed for anxiety"},
+                    follow_redirects=False)
+    assert r.headers["location"].startswith("/medicines/")
+    with session(cfg.db_path) as conn:
+        lor = conn.execute("SELECT * FROM medications WHERE info_key = 'lorazepam'").fetchone()
+        olz = conn.execute("SELECT * FROM medications WHERE info_key = 'olanzapine'").fetchone()
+    assert lor["min_hours_between"] == 6 and lor["strength"] == "0.5 mg tablet"
+    r = client.post(f"/medicines/{olz['id']}/import",
+                    data={"rx_text": "Olanzapine 10 mg tab - Take 1 tablet by mouth at 8 PM on days 1 to 3"}, follow_redirects=True)
+    assert "Filled in from the label" in r.text
+    with session(cfg.db_path) as conn:
+        olz = store.medication(conn, olz["id"])
+        plans = store.plans(conn, olz["id"])
+    assert olz["strength"] == "10 mg tablet" and [(p["start_day"], p["end_day"], p["times"]) for p in plans] == [(1, 3, "20:00")]
+
+
+def test_taper_doses_show_on_today(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=1))  # today is Day 2
+    text = "Dexamethasone 4 mg tab - Take 1 tablet the evening of chemo, then 2 tablets twice daily for 3 days"
+    with session(cfg.db_path) as conn:
+        dex = conn.execute("SELECT id FROM medications WHERE info_key = 'dexamethasone'").fetchone()["id"]
+    client.post(f"/medicines/{dex}/import", data={"rx_text": text})
+    html = client.get("/").text
+    assert "2 tablets (8 mg)" in html
+    with session(cfg.db_path) as conn:
+        day1 = [s for s in schedule.slots(conn, schedule.all_cycles(conn)[0], 1) if s.plan["medication_id"] == dex]
+    assert [(s.time, s.dose) for s in day1] == [("18:00", "1 tablet (4 mg)")]

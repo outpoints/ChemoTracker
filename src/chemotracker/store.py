@@ -224,6 +224,7 @@ def validate_plan(values: dict) -> dict:
         "end_day": end,
         "times": ",".join(times),
         "label": clean(values.get("label")),
+        "dose": clean(values.get("dose")),
         "from_cycle": from_cycle,
         "to_cycle": to_cycle,
     }
@@ -232,9 +233,9 @@ def validate_plan(values: dict) -> dict:
 def create_plan(conn: sqlite3.Connection, med_id: int, values: dict) -> int:
     data = validate_plan(values)
     cur = conn.execute(
-        """INSERT INTO plans (medication_id, kind, start_day, end_day, times, label, from_cycle, to_cycle, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        (med_id, data["kind"], data["start_day"], data["end_day"], data["times"], data["label"],
+        """INSERT INTO plans (medication_id, kind, start_day, end_day, times, label, dose, from_cycle, to_cycle, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (med_id, data["kind"], data["start_day"], data["end_day"], data["times"], data["label"], data["dose"],
          data["from_cycle"], data["to_cycle"], utcnow()),
     )
     return rowid(cur)
@@ -243,9 +244,9 @@ def create_plan(conn: sqlite3.Connection, med_id: int, values: dict) -> int:
 def update_plan(conn: sqlite3.Connection, plan_id: int, values: dict) -> None:
     data = validate_plan(values)
     conn.execute(
-        """UPDATE plans SET kind = ?, start_day = ?, end_day = ?, times = ?, label = ?, from_cycle = ?, to_cycle = ?
-            WHERE id = ?""",
-        (data["kind"], data["start_day"], data["end_day"], data["times"], data["label"],
+        """UPDATE plans SET kind = ?, start_day = ?, end_day = ?, times = ?, label = ?, dose = ?, from_cycle = ?,
+                  to_cycle = ? WHERE id = ?""",
+        (data["kind"], data["start_day"], data["end_day"], data["times"], data["label"], data["dose"],
          data["from_cycle"], data["to_cycle"], plan_id),
     )
 
@@ -286,6 +287,22 @@ def create_cycle(conn: sqlite3.Connection, values: dict) -> int:
     return rowid(cur)
 
 
+def create_cycle_series(conn: sqlite3.Connection, values: dict) -> list[int]:
+    """Cycles first..first+count-1, each starting `length_days` after the one before.
+
+    This is how regimens are written ("every 14 days x 4 cycles"). Dates stay
+    editable per cycle because treatment is often delayed.
+    """
+    data = validate_cycle(values)
+    count = parse_int(_s(values.get("count")), "How many cycles", 1, 60) or 1
+    first = date.fromisoformat(data["day1"])
+    ids = []
+    for i in range(count):
+        ids.append(create_cycle(conn, {**data, "number": data["number"] + i,
+                                       "day1": (first + timedelta(days=i * data["length_days"])).isoformat()}))
+    return ids
+
+
 def update_cycle(conn: sqlite3.Connection, cycle_id: int, values: dict) -> None:
     data = validate_cycle(values)
     try:
@@ -308,6 +325,40 @@ def next_cycle_defaults(conn: sqlite3.Connection, today: date) -> dict:
     day1 = date.fromisoformat(last["day1"]) + timedelta(days=last["length_days"])
     return {"number": last["number"] + 1, "day1": day1.isoformat(), "length_days": last["length_days"],
             "regimen": last["regimen"] or ""}
+
+
+# ---------------------------------------------------------------- prescriptions
+
+
+def import_parsed(conn: sqlite3.Connection, med, cycles: tuple[int, int | None] | None = None,
+                  into: int | None = None) -> int:
+    """Create (or fill in) a medicine from a parsed prescription. `med` is an rxparse.ParsedMed."""
+    from . import rxparse
+
+    if into is not None:
+        med_id = into
+    elif med.info_key:
+        med_id = add_from_catalog(conn, med.info_key)
+    else:
+        existing = conn.execute("SELECT id FROM medications WHERE lower(name) = lower(?) AND info_key IS NULL",
+                                (med.name,)).fetchone()
+        med_id = existing["id"] if existing else create_medication(
+            conn, {"name": med.name or "Medicine", "route": med.route, "category": "custom"})
+        set_active(conn, med_id, True)
+    values = {"strength": med.strength, "dose": med.dose, "directions": med.directions,
+              "min_hours_between": med.min_hours_between, "max_per_day": med.max_per_day, "route": med.route}
+    if med.brand:
+        values["brand"] = med.brand
+    update_medication(conn, med_id, values)
+    if med.plans:
+        for p in plans(conn, med_id):
+            delete_plan(conn, p["id"])
+        for p in med.plans:
+            values = rxparse.plan_values(p)
+            if cycles:
+                values["from_cycle"], values["to_cycle"] = str(cycles[0]), "" if cycles[1] is None else str(cycles[1])
+            create_plan(conn, med_id, values)
+    return med_id
 
 
 # ---------------------------------------------------------------- dose logs

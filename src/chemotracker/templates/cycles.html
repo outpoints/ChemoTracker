@@ -43,7 +43,10 @@
       <div class="field"><label for="day1">Chemo day (Day 1)</label><input id="day1" name="day1" type="date" value="{{ defaults.day1 }}" required></div>
       <div class="field"><label for="length_days">Days in the cycle</label><input id="length_days" name="length_days" type="number" min="1" max="90" value="{{ defaults.length_days }}" required></div>
     </div>
-    <div class="field"><label for="regimen">Treatment name <span class="meta">(optional)</span></label><input id="regimen" name="regimen" type="text" value="{{ defaults.regimen }}" placeholder="For example: AC (doxorubicin + cyclophosphamide)"></div>
+    <div class="field-row">
+      <div class="field"><label for="regimen">Treatment name <span class="meta">(optional)</span></label><input id="regimen" name="regimen" type="text" value="{{ defaults.regimen }}" placeholder="For example: AC (doxorubicin + cyclophosphamide)"></div>
+      <div class="field"><label for="count">How many?</label><input id="count" name="count" type="number" min="1" max="60" value="1"><p class="hint">More than 1 adds them back to back.</p></div>
+    </div>
     <p class="hint">If chemo gets moved, change Day 1 here and every dose shifts with it.</p>
     <button class="btn btn-primary" type="submit">{{ icon("plus") }}Add cycle</button>
   </form>

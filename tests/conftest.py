@@ -41,11 +41,14 @@ def today(cfg) -> date:
 
 
 def setup_walkthrough(client, day1: date) -> None:
-    """Drive the real first-run walkthrough with the label details from the family's prescriptions."""
+    """Drive the real first-run walkthrough with generic example label details."""
     r = client.get("/", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/setup"
     r = client.post("/setup/people", data={"names[]": ["John", "Jane"], "roles[0]": "patient", "roles[1]": "family",
                                             "me": "new:0"}, follow_redirects=False)
+    assert r.headers["location"] == "/setup/cycle", r.text
+    r = client.post("/setup/cycle", data={"number": "1", "day1": day1.isoformat(), "length_days": "14", "count": "1",
+                                           "regimen": "Example"}, follow_redirects=False)
     assert r.headers["location"] == "/setup/medicines", r.text
     keys = ["doxorubicin", "cyclophosphamide", "paclitaxel", "ondansetron", "prochlorperazine", "dexamethasone",
             "olanzapine", "filgrastim"]
@@ -68,7 +71,7 @@ def setup_walkthrough(client, day1: date) -> None:
     while True:
         page = client.get(f"/setup/label/{index}", follow_redirects=False)
         if page.status_code == 303:
-            assert page.headers["location"] == "/setup/cycle"
+            assert page.headers["location"] == "/setup/team"
             break
         assert page.status_code == 200
         name = next(n for n in ["Ondansetron", "Prochlorperazine", "Dexamethasone", "Olanzapine", "Filgrastim",
@@ -77,9 +80,6 @@ def setup_walkthrough(client, day1: date) -> None:
         r = client.post(f"/setup/label/{index}", data=data, follow_redirects=False)
         assert r.status_code == 303, r.text
         index += 1
-    r = client.post("/setup/cycle", data={"number": "1", "day1": day1.isoformat(), "length_days": "14", "regimen": "Example"},
-                    follow_redirects=False)
-    assert r.headers["location"] == "/setup/team"
     r = client.post("/setup/team", data={"clinic_name": "Infusion Center", "clinic_phone": "555-0100",
                                           "after_hours_phone": "555-0199", "fever_f": "100.4", "call_if": "Fever"},
                     follow_redirects=False)

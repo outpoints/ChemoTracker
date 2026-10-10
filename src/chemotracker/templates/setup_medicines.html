@@ -3,8 +3,10 @@
 {% block setup %}
 {% from "_ui.html" import icon %}
 <h1>Which medicines are you taking?</h1>
-<p class="lead">Tick everything on your pharmacy labels and the clinic's medicine sheet, including the ones given at the clinic.</p>
+<p class="lead">Write in your prescriptions, tick them in the list, or both. Include the ones given at the clinic.</p>
 <form method="post" action="/setup/medicines" style="margin-top: var(--s5)">
+  {% include "_rx_import.html" with context %}
+  <h2 class="picker-title">Or tick them in the list</h2>
   {% include "_picker.html" with context %}
   <section class="card card-pad" style="margin-top: var(--s4)">
     <div class="field">
@@ -15,7 +17,7 @@
     </div>
   </section>
   <div class="setup-nav">
-    <a class="btn btn-secondary btn-lg" href="/setup/people">{{ icon("arrow-left") }}Back</a>
+    <a class="btn btn-secondary btn-lg" href="/setup/cycle">{{ icon("arrow-left") }}Back</a>
     <button class="btn btn-primary btn-lg" type="submit">Next {{ icon("arrow-right") }}</button>
   </div>
 </form>

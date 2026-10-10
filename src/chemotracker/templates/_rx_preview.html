@@ -1,0 +1,46 @@
+{% from "_ui.html" import icon %}
+{% if rx_meds %}
+<div class="rx-results" data-keys="{{ rx_meds | map(attribute='info_key') | select | join(',') }}">
+  <input type="hidden" name="rx_seen" value="1">
+  <div class="spread rx-summary">
+    <h3>Found {{ rx_meds | length }} {{ "medicine" if rx_meds | length == 1 else "medicines" }}</h3>
+    {% if rx_day1 %}<span class="meta">Dates for cycle {{ rx_cycle.number }}</span>{% endif %}
+  </div>
+  {% for m in rx_meds %}{% set i = loop.index0 %}
+  <article class="rx-card">
+    <label class="rx-include">
+      <input type="checkbox" name="rx_include[]" value="{{ i }}" checked data-rx-key="{{ m.info_key or '' }}">
+      <span class="grow"><span class="rx-name">{{ m.name or "Medicine name?" }}</span>{% if m.brand %} <span class="meta">({{ m.brand }})</span>{% endif %}
+        <span class="rx-tag {{ 'known' if m.info_key else 'own' }}">{{ "In the medicine list" if m.info_key else "Your own medicine" }}</span></span>
+    </label>
+    {% if not m.info_key %}
+    <div class="field rx-rename"><label for="rx_name_{{ i }}">Name</label><input id="rx_name_{{ i }}" name="rx_name_{{ i }}" type="text" value="{{ m.name }}" placeholder="Medicine name"></div>
+    {% endif %}
+    <dl class="rx-facts">
+      {% if m.strength %}<dt>Strength</dt><dd>{{ m.strength }}</dd>{% endif %}
+      {% if m.dose %}<dt>Dose</dt><dd>{{ m.dose }}</dd>{% endif %}
+      <dt>How</dt><dd>{{ rx_how(m) }}</dd>
+      <dt>{{ "Days" if m.plans | length == 1 else "Schedule" }}</dt>
+      <dd>{% for p in m.plans %}<div>{{ rx_days(p, rx_day1) }}{% if m.plans | length > 1 and p.times %} at {{ p.times | map("fmt_time") | join(", ") }}{% endif %}{% if p.dose %} · {{ p.dose }}{% endif %}{% if not p.from_label %} <span class="rx-guess">guess</span>{% endif %}</div>{% endfor %}</dd>
+    </dl>
+    {% if m.directions %}<p class="rx-sig">{{ m.directions }}</p>{% endif %}
+    {% if m.notes %}
+    <ul class="rx-notes">{% for n in m.notes %}<li>{{ icon("triangle-alert") }}<span>{{ n }}</span></li>{% endfor %}</ul>
+    {% endif %}
+    {% if rx_groups %}
+    <div class="field rx-cycles">
+      <label for="rx_cycles_{{ i }}">Which cycles?</label>
+      <select id="rx_cycles_{{ i }}" name="rx_cycles_{{ i }}">
+        <option value="all">Every cycle</option>
+        {% for name, a, b in rx_groups %}<option value="{{ a }}-{{ b }}">{{ name or "Cycles" }} · cycles {{ a }}–{{ b }}</option>{% endfor %}
+      </select>
+      <p class="hint">Anti-nausea medicines often change when the treatment changes.</p>
+    </div>
+    {% endif %}
+  </article>
+  {% endfor %}
+  <p class="meta">Untick anything that isn't right. You can change every detail later on each medicine's page.</p>
+</div>
+{% elif rx_text %}
+<div class="rx-results"><input type="hidden" name="rx_seen" value="1"><p class="meta">Couldn't find a medicine in that. Try one medicine per line, starting with its name.</p></div>
+{% endif %}

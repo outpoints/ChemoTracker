@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import re
 import io
 import sqlite3
 from contextlib import asynccontextmanager
@@ -17,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, backup, export, icons, medinfo, profiles, schedule, store
+from . import __version__, backup, export, icons, medinfo, profiles, rxparse, schedule, store
 from . import symptoms as sx
 from .config import PACKAGE_DIR, Settings, load_settings
 from .db import get_settings, migrate, put_settings, session
@@ -431,8 +432,16 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     def add_medicine_page(request: Request):
         with db() as conn:
             taken = {m["info_key"] for m in store.medications(conn, active=True) if m["info_key"]}
+            rx = _rx_context(conn, "", now().date())
         return render(request, "medicine_add.html", active="medicines", taken=taken, chosen=set(), error=None,
-                      catalog=medinfo.by_category(), shortcuts=medinfo.REGIMEN_SHORTCUTS)
+                      catalog=medinfo.by_category(), shortcuts=medinfo.REGIMEN_SHORTCUTS, **rx)
+
+    @app.post("/rx/preview", response_class=HTMLResponse)
+    async def rx_preview(request: Request):
+        data = await form(request)
+        with db() as conn:
+            rx = _rx_context(conn, str(data.get("rx_text") or ""), now().date())
+        return templates.TemplateResponse(request, "_rx_preview.html", {**rx, "today": now().date()})
 
     @app.post("/medicines/add")
     async def add_medicine(request: Request):
@@ -441,8 +450,18 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         custom = store.clean(data.get("custom_name"))
         created = []
         with db() as conn:
+            if data.get("action") == "preview":
+                taken = {m["info_key"] for m in store.medications(conn, active=True) if m["info_key"]}
+                rx = _rx_context(conn, str(data.get("rx_text") or ""), now().date())
+                chosen = set(keys) | {m.info_key for m in rx["rx_meds"] if m.info_key}
+                return render(request, "medicine_add.html", active="medicines", taken=taken, chosen=chosen, error=None,
+                              catalog=medinfo.by_category(), shortcuts=medinfo.REGIMEN_SHORTCUTS, **rx)
+            imported = _import_rx(conn, data)
+            created.extend(imported)
+            rx_keys = {store.medication(conn, i)["info_key"] for i in imported}
             for key in keys:
-                created.append(store.add_from_catalog(conn, key))
+                if key not in rx_keys:
+                    created.append(store.add_from_catalog(conn, key))
             if custom:
                 med_id = store.create_medication(conn, {"name": custom, "route": "oral", "category": "custom"})
                 store.create_plan(conn, med_id, {"kind": "as_needed", "start_day": "1", "end_day": ""})
@@ -450,8 +469,24 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         if not created:
             return go("/medicines/add", "Tick at least one medicine, or type one that isn't listed.", request)
         if len(created) == 1:
-            return go(f"/medicines/{created[0]}?new=1", "Added. Now copy the pharmacy label.", request)
-        return go("/medicines", f"Added {len(created)} medicines. Open each one to copy its label.", request)
+            return go(f"/medicines/{created[0]}?new=1",
+                      "Added from your prescription. Check the details." if imported else "Added. Now copy the pharmacy label.",
+                      request)
+        note = f" {len(imported)} filled in from your prescriptions." if imported else ""
+        return go("/medicines", f"Added {len(created)} medicines.{note} Open each one to check it.", request)
+
+    @app.post("/medicines/{med_id}/import")
+    async def import_into_medicine(request: Request, med_id: int):
+        data = await form(request)
+        parsed = rxparse.parse(str(data.get("rx_text") or ""))
+        if not parsed:
+            return go(f"/medicines/{med_id}", "Couldn't read that. Type the directions from the label.", request)
+        with db() as conn:
+            if store.medication(conn, med_id) is None:
+                raise HTTPException(404)
+            store.import_parsed(conn, parsed[0], into=med_id)
+        extra = " Only the first medicine was used." if len(parsed) > 1 else ""
+        return go(f"/medicines/{med_id}#plans", f"Filled in from the label. Check the schedule below.{extra}", request)
 
     @app.get("/medicines/{med_id}", response_class=HTMLResponse)
     def medicine_page(request: Request, med_id: int, new: int = 0):
@@ -542,10 +577,12 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         data = await form(request)
         try:
             with db() as conn:
-                cycle_id = store.create_cycle(conn, data)
+                ids = store.create_cycle_series(conn, data)
         except store.InvalidInput as exc:
             return go("/cycles", str(exc), request)
-        return go(f"/cycles/{cycle_id}", "Cycle added. Medicines follow their schedules from its Day 1.", request)
+        if len(ids) > 1:
+            return go("/cycles", f"Added {len(ids)} cycles. Change any date if treatment moves.", request)
+        return go(f"/cycles/{ids[0]}", "Cycle added. Medicines follow their schedules from its Day 1.", request)
 
     @app.get("/cycles/{cycle_id}", response_class=HTMLResponse)
     def cycle_page(request: Request, cycle_id: int):
@@ -774,15 +811,16 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 request.session["profile_id"] = created[0]
             elif ids:
                 request.session.setdefault("profile_id", ids[0])
-        return go("/setup/medicines")
+        return go("/setup/cycle")
 
     @app.get("/setup/medicines", response_class=HTMLResponse)
     def setup_medicines(request: Request):
         with db() as conn:
             chosen = {m["info_key"] for m in store.medications(conn, active=True) if m["info_key"]}
             custom = [m for m in store.medications(conn, active=True) if not m["info_key"]]
-        return render(request, "setup_medicines.html", step=2, catalog=medinfo.by_category(), chosen=chosen,
-                      custom=custom, shortcuts=medinfo.REGIMEN_SHORTCUTS)
+            rx = _rx_context(conn, "", now().date())
+        return render(request, "setup_medicines.html", step=3, catalog=medinfo.by_category(), chosen=chosen,
+                      custom=custom, shortcuts=medinfo.REGIMEN_SHORTCUTS, **rx)
 
     @app.post("/setup/medicines")
     async def setup_medicines_save(request: Request):
@@ -790,11 +828,20 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         keys = set(_as_list(data.get("keys")))
         customs = [c for c in (store.clean(x) for x in _as_list(data.get("custom_name"))) if c]
         with db() as conn:
+            if data.get("action") == "preview":
+                rx = _rx_context(conn, str(data.get("rx_text") or ""), now().date())
+                custom = [m for m in store.medications(conn, active=True) if not m["info_key"]]
+                chosen = keys | {m.info_key for m in rx["rx_meds"] if m.info_key}
+                return render(request, "setup_medicines.html", step=3, catalog=medinfo.by_category(), chosen=chosen,
+                              custom=custom, shortcuts=medinfo.REGIMEN_SHORTCUTS, **rx)
+            rx_keys = {m.info_key for i, m in _included_rx(data) if m.info_key}
+            keys |= rx_keys
             for m in store.medications(conn, active=True):
                 if m["info_key"] and m["info_key"] not in keys:
                     store.set_active(conn, m["id"], False)
-            for key in keys:
+            for key in keys - rx_keys:
                 store.add_from_catalog(conn, key)
+            _import_rx(conn, data)
             for name in customs:
                 med_id = store.create_medication(conn, {"name": name, "route": "oral", "category": "custom"})
                 store.create_plan(conn, med_id, {"kind": "as_needed", "start_day": "1", "end_day": ""})
@@ -810,10 +857,10 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             if not meds:
                 return go("/setup/medicines")
             if index >= len(meds):
-                return go("/setup/cycle")
+                return go("/setup/team")
             med = meds[index]
             plans = store.plans(conn, med["id"])
-        return render(request, "setup_label.html", step=3, med=med, plan=plans[0] if plans else None,
+        return render(request, "setup_label.html", step=4, med=med, plan=plans[0] if plans else None,
                       extra_plans=len(plans) - 1, index=index, total=len(meds), info=medinfo.lookup(med["info_key"]),
                       error=None, length=14)
 
@@ -823,7 +870,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         with db() as conn:
             meds = _setup_order(store.medications(conn, active=True))
             if index >= len(meds):
-                return go("/setup/cycle")
+                return go("/setup/team")
             med = meds[index]
             plans = store.plans(conn, med["id"])
             try:
@@ -834,7 +881,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                     store.create_plan(conn, med["id"], data)
             except store.InvalidInput as exc:
                 conn.rollback()
-                return render(request, "setup_label.html", status_code=400, step=3, med=med,
+                return render(request, "setup_label.html", status_code=400, step=4, med=med,
                               plan=_plan_from_form(data, plans[0] if plans else None), extra_plans=len(plans) - 1,
                               index=index, total=len(meds), info=medinfo.lookup(med["info_key"]), error=str(exc),
                               length=14, values=data)
@@ -844,10 +891,10 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     def setup_cycle(request: Request):
         with db() as conn:
             existing = conn.execute("SELECT * FROM cycles ORDER BY number LIMIT 1").fetchone()
-            count = len(store.medications(conn, active=True))
+            total = conn.execute("SELECT COUNT(*) FROM cycles").fetchone()[0]
         values = dict(existing) if existing else {"number": 1, "day1": now().date().isoformat(), "length_days": 14,
-                                                  "regimen": ""}
-        return render(request, "setup_cycle.html", step=4, values=values, existing=existing, error=None, count=count)
+                                                  "regimen": "", "count": 4}
+        return render(request, "setup_cycle.html", step=2, values=values, existing=existing, total=total, error=None)
 
     @app.post("/setup/cycle")
     async def setup_cycle_save(request: Request):
@@ -858,15 +905,27 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 if existing:
                     store.update_cycle(conn, existing["id"], data)
                 else:
-                    store.create_cycle(conn, data)
+                    first = store.validate_cycle(data)
+                    count = store.parse_int(str(data.get("count") or "1"), "How many cycles", 1, 60) or 1
+                    store.create_cycle_series(conn, {**data, "count": str(count)})
+                    if store.clean(data.get("then_count")):
+                        then_len = store.parse_int(data.get("then_length_days"), "Days in each later cycle", 1, 90) or 7
+                        gap = store.parse_int(data.get("then_gap"), "Days until the next part", 1, 90) or first["length_days"]
+                        last_day1 = date.fromisoformat(first["day1"]) + timedelta(days=(count - 1) * first["length_days"])
+                        store.create_cycle_series(conn, {
+                            "number": str(first["number"] + count), "day1": (last_day1 + timedelta(days=gap)).isoformat(),
+                            "length_days": str(then_len), "count": data.get("then_count"),
+                            "regimen": data.get("then_regimen") or ""})
         except store.InvalidInput as exc:
-            return render(request, "setup_cycle.html", status_code=400, step=4, values=data, existing=None,
-                          error=str(exc), count=0)
-        return go("/setup/team")
+            return render(request, "setup_cycle.html", status_code=400, step=2, values=data, existing=None, total=0,
+                          error=str(exc))
+        return go("/setup/medicines")
 
     @app.get("/setup/team", response_class=HTMLResponse)
     def setup_team(request: Request):
-        return render(request, "setup_team.html", step=5, error=None)
+        with db() as conn:
+            total = len(store.medications(conn, active=True))
+        return render(request, "setup_team.html", step=5, error=None, last_label=max(total - 1, 0))
 
     @app.post("/setup/team")
     async def setup_team_save(request: Request):
@@ -874,7 +933,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         try:
             store.parse_float(data.get("fever_f"), "Fever line", 97, 104)
         except store.InvalidInput as exc:
-            return render(request, "setup_team.html", status_code=400, step=5, error=str(exc))
+            return render(request, "setup_team.html", status_code=400, step=5, error=str(exc), last_label=0)
         with db() as conn:
             put_settings(conn, {**{k: str(v).strip() for k, v in data.items()}, "onboarded": "1"})
         return go("/", "All set. Today shows what's due. Tap a symptom any time you notice one.", request)
@@ -897,6 +956,110 @@ def _fever(prefs: dict[str, str]) -> float:
         return float(prefs.get("fever_f") or 100.4)
     except ValueError:
         return 100.4
+
+
+def _reference_cycle(conn: sqlite3.Connection, today: date) -> sqlite3.Row | None:
+    """The cycle whose Day 1 the prescription preview counts from."""
+    found = schedule.cycle_for_date(conn, today) or schedule.next_cycle_after(conn, today)
+    if found is None:
+        cycles = schedule.all_cycles(conn)
+        found = cycles[-1] if cycles else None
+    return found
+
+
+def _cycle_groups(conn: sqlite3.Connection) -> list[tuple[str, int, int]]:
+    """Runs of consecutive cycles with the same treatment name, e.g. AC 1-4 then paclitaxel 5-16."""
+    groups: list[tuple[str, int, int]] = []
+    for c in sorted(schedule.all_cycles(conn), key=lambda c: c["number"]):
+        name = c["regimen"] or ""
+        if groups and groups[-1][0] == name and c["number"] == groups[-1][2] + 1:
+            groups[-1] = (name, groups[-1][1], c["number"])
+        else:
+            groups.append((name, c["number"], c["number"]))
+    return groups
+
+
+def _rx_context(conn: sqlite3.Connection, text: str, today: date) -> dict:
+    cycle = _reference_cycle(conn, today)
+    groups = _cycle_groups(conn)
+    return {
+        "rx_text": text,
+        "rx_meds": rxparse.parse(text) if text.strip() else [],
+        "rx_cycle": cycle,
+        "rx_day1": schedule.day1_of(cycle) if cycle else None,
+        "rx_groups": groups if len(groups) > 1 else [],
+        "rx_example": RX_EXAMPLE,
+    }
+
+
+RX_EXAMPLE = (
+    "Ondansetron HCl 8MG TAB NORT - Take one tablet by mouth every eight hours\n"
+    "Prochlorperazine Maleate 10 MG TAB NORT - Take one tablet by mouth every six hours\n"
+    "dexAMETHasone 4MG TAB NORT - Take 2 tablets by mouth daily. Take on days 2, 3, AND 4, AFTER CHEMO THEN STOP\n"
+    "OLANZapine 5MG TAB NORT - TAKE 1 TABLET BY MOUTH AT BEDTIME. Take on days 2, 3 AND 4 AFTER CHEMO THEN STOP"
+)
+
+
+def _included_rx(data: dict) -> list[tuple[int, rxparse.ParsedMed]]:
+    text = str(data.get("rx_text") or "")
+    if not text.strip():
+        return []
+    meds = rxparse.parse(text)
+    if data.get("rx_seen"):
+        include = {str(x) for x in _as_list(data.get("rx_include"))}
+        picked = [(i, m) for i, m in enumerate(meds) if str(i) in include]
+    else:  # pasted and saved without looking at the preview: take everything that was read
+        picked = list(enumerate(meds))
+    for i, m in picked:
+        name = store.clean(data.get(f"rx_name_{i}"))
+        if name and not m.info_key:
+            m.name = name
+    return [(i, m) for i, m in picked if m.name]
+
+
+def _import_rx(conn: sqlite3.Connection, data: dict) -> list[int]:
+    ids = []
+    for i, m in _included_rx(data):
+        rng = str(data.get(f"rx_cycles_{i}") or "all")
+        cycles = None
+        if re.fullmatch(r"\d+-\d+", rng):
+            a, b = (int(x) for x in rng.split("-"))
+            cycles = (a, b)
+        ids.append(store.import_parsed(conn, m, cycles))
+    return ids
+
+
+def rx_how(m: rxparse.ParsedMed) -> str:
+    kinds = {p.kind for p in m.plans}
+    if "clinic" in kinds:
+        return "Given at the clinic"
+    if kinds == {"as_needed"}:
+        text = "As needed"
+        if m.indication:
+            text += f" for {m.indication}"
+        if m.min_hours_between:
+            text += f", at least {m.min_hours_between:g} hours apart"
+        if m.max_per_day:
+            text += f", up to {m.max_per_day} a day"
+        return text
+    times = sorted({t for p in m.plans for t in p.times})
+    return "On a schedule" + (f" at {', '.join(schedule.fmt_time(t) for t in times)}" if times else "")
+
+
+def rx_days(p: rxparse.ParsedPlan, day1: date | None) -> str:
+    if p.end_day is None:
+        text = "Every day of the cycle" if p.start_day <= 1 else f"Day {p.start_day} to the end of the cycle"
+    else:
+        text = schedule.days_text(p.start_day, p.end_day)
+    if day1 is not None:
+        first = day1 + timedelta(days=p.start_day - 1)
+        if p.end_day is None:
+            text += f" (from {schedule.fmt_day(first)})"
+        elif p.end_day == p.start_day:
+            text += f" ({schedule.fmt_day(first)})"
+        else:
+            text += f" ({schedule.fmt_day(first)} – {schedule.fmt_day(day1 + timedelta(days=p.end_day - 1))})"
+    return text
 
 
 def _as_list(value) -> list[str]:
@@ -922,6 +1085,7 @@ def _plan_from_form(data: dict, existing: sqlite3.Row | None) -> dict:
         "end_day": None if data.get("whole_cycle") else (picked[-1] if picked else out.get("end_day")),
         "times": ",".join(t for t in _as_list(data.get("times")) if t),
         "label": data.get("label") or "",
+        "dose": data.get("dose") or "",
     })
     return out
 
@@ -980,6 +1144,8 @@ def _template_globals(templates: Jinja2Templates) -> None:
     env.globals.update(
         ring_points=ring_points,
         icon_paths=icons.paths,
+        rx_how=rx_how,
+        rx_days=rx_days,
         initials=profiles.initials,
         roles=profiles.ROLES,
         short_wait=short_wait,

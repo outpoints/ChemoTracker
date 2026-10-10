@@ -2,20 +2,56 @@
 {% block title %}Chemo day · ChemoTracker{% endblock %}
 {% block setup %}
 {% from "_ui.html" import icon %}
+{% set v = values or {} %}
 <h1>When is chemo day?</h1>
-<p class="lead">Day 1 is the day of the infusion. Every medicine's days are counted from it.</p>
+<p class="lead">Day 1 is the day of the infusion. Your medicines' days are counted from it, the way your clinic's sheet counts them.</p>
 <form class="form" method="post" action="/setup/cycle" style="margin-top: var(--s6)">
   {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
   <div class="card card-pad form">
-    <div class="field"><label for="day1">Chemo day (Day 1) of this cycle</label><input id="day1" name="day1" type="date" value="{{ values.day1 }}" required></div>
+    <div class="field"><label for="day1">Chemo day (Day 1){% if not existing %} of the first cycle you're tracking{% endif %}</label>
+      <input id="day1" name="day1" type="date" value="{{ v.get('day1') or '' }}" required></div>
     <div class="field-row">
-      <div class="field"><label for="number">Which cycle is this?</label><input id="number" name="number" type="number" min="1" max="99" value="{{ values.number }}" required><p class="hint">1 if you're just starting.</p></div>
-      <div class="field"><label for="length_days">Days in each cycle</label><input id="length_days" name="length_days" type="number" min="1" max="90" value="{{ values.length_days }}" required><p class="hint">Every 2 weeks = 14. Every 3 weeks = 21. Weekly = 7.</p></div>
+      <div class="field"><label for="number">Which cycle is that?</label><input id="number" name="number" type="number" min="1" max="99" value="{{ v.get('number') or 1 }}" required><p class="hint">1 if you're just starting.</p></div>
+      <div class="field"><label for="length_days">How often does chemo repeat?</label>
+        <select id="length_days" name="length_days" data-length>
+          {% set L = (v.get('length_days') or 14) | int %}
+          {% for n, label in [(7, "Every week (7 days)"), (14, "Every 2 weeks (14 days)"), (21, "Every 3 weeks (21 days)"), (28, "Every 4 weeks (28 days)")] %}<option value="{{ n }}" {% if L == n %}selected{% endif %}>{{ label }}</option>{% endfor %}
+          {% if L not in (7, 14, 21, 28) %}<option value="{{ L }}" selected>Every {{ L }} days</option>{% endif %}
+        </select>
+        <p class="hint">Your plan may say q2w, q14d or "dose-dense" for every 2 weeks.</p></div>
     </div>
-    <div class="field"><label for="regimen">Treatment name <span class="meta">(optional)</span></label><input id="regimen" name="regimen" type="text" value="{{ values.regimen or '' }}" placeholder="For example: AC-T"></div>
+    {% if existing %}
+    <p class="meta">{{ total }} {{ "cycle is" if total == 1 else "cycles are" }} set up. Add or move cycles on the Cycle page.</p>
+    {% else %}
+    <div class="field-row">
+      <div class="field"><label for="count">How many cycles?</label><input id="count" name="count" type="number" min="1" max="60" value="{{ v.get('count') or 4 }}" required><p class="hint">For example "x 4 cycles". You can add more later.</p></div>
+      <div class="field"><label for="regimen">Treatment name <span class="meta">(optional)</span></label><input id="regimen" name="regimen" type="text" value="{{ v.get('regimen') or '' }}" placeholder="For example: AC"></div>
+    </div>
+    {% endif %}
   </div>
+
+  {% if not existing %}
+  <details class="card more" style="padding: 0 var(--s5)" {% if v.get('then_count') %}open{% endif %}>
+    <summary>{{ icon("plus") }}&nbsp;Then a second part, like "followed by paclitaxel weekly x 12"</summary>
+    <div class="form" style="padding-bottom: var(--s5)">
+      <div class="field-row">
+        <div class="field"><label for="then_regimen">Treatment name</label><input id="then_regimen" name="then_regimen" type="text" value="{{ v.get('then_regimen') or '' }}" placeholder="For example: Paclitaxel"></div>
+        <div class="field"><label for="then_count">How many cycles?</label><input id="then_count" name="then_count" type="number" min="1" max="60" value="{{ v.get('then_count') or '' }}" placeholder="For example: 12"></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label for="then_length_days">How often?</label>
+          <select id="then_length_days" name="then_length_days">
+            {% for n, label in [(7, "Every week (7 days)"), (14, "Every 2 weeks (14 days)"), (21, "Every 3 weeks (21 days)"), (28, "Every 4 weeks (28 days)")] %}<option value="{{ n }}" {% if (v.get('then_length_days') or 7) | int == n %}selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select></div>
+        <div class="field"><label for="then_gap">Starts how many days after the last Day 1?</label><input id="then_gap" name="then_gap" type="number" min="1" max="90" value="{{ v.get('then_gap') or '' }}" placeholder="Same as above"><p class="hint">Usually one cycle length.</p></div>
+      </div>
+    </div>
+  </details>
+  {% endif %}
+
+  <p class="meta">Treatment often moves for blood counts or holidays. You can change any cycle's date later and its doses move with it.</p>
   <div class="setup-nav">
-    <a class="btn btn-secondary btn-lg" href="/setup/label/{{ [count - 1, 0] | max }}">{{ icon("arrow-left") }}Back</a>
+    <a class="btn btn-secondary btn-lg" href="/setup/people">{{ icon("arrow-left") }}Back</a>
     <button class="btn btn-primary btn-lg" type="submit">Next {{ icon("arrow-right") }}</button>
   </div>
 </form>

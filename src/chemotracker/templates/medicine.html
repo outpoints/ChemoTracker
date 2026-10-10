@@ -14,6 +14,14 @@
 
   <div class="two-col">
     <div class="stack-lg">
+      <details class="card more rx-fill" style="padding: 0 var(--s5)" {% if is_new and not med.directions %}open{% endif %}>
+        <summary>{{ icon("clipboard-paste") }}&nbsp;Fill this in from the label</summary>
+        <form class="form" method="post" action="/medicines/{{ med.id }}/import" style="padding-bottom: var(--s5)">
+          <p class="meta">Type or paste what's printed on the bottle. It replaces the label details and schedule below. Check them after.</p>
+          <textarea name="rx_text" rows="3" placeholder="{{ med.name }} - Take 1 tablet by mouth every 8 hours as needed for nausea" required></textarea>
+          <button class="btn btn-secondary" type="submit">{{ icon("sparkles") }}Fill it in</button>
+        </form>
+      </details>
       <form class="card card-pad form" method="post" action="/medicines/{{ med.id }}">
         <div class="spread"><h2>Pharmacy label</h2>{% if is_new %}<span class="pill pill-due">Copy the label</span>{% endif %}</div>
         <div class="field-row">

@@ -17,7 +17,7 @@
     <div class="field"><label for="patient_name">Name on the report <span class="meta">(optional)</span></label><input id="patient_name" name="patient_name" type="text" value="{{ prefs.patient_name }}" autocomplete="off"></div>
   </div>
   <div class="setup-nav">
-    <a class="btn btn-secondary btn-lg" href="/setup/cycle">{{ icon("arrow-left") }}Back</a>
+    <a class="btn btn-secondary btn-lg" href="/setup/label/{{ last_label }}">{{ icon("arrow-left") }}Back</a>
     <button class="btn btn-primary btn-lg" type="submit">Finish {{ icon("check") }}</button>
   </div>
 </form>

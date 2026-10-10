@@ -128,6 +128,10 @@ MIGRATIONS: list[str] = [
     ALTER TABLE symptom_logs ADD COLUMN logged_by INTEGER REFERENCES profiles(id) ON DELETE SET NULL;
     ALTER TABLE symptom_logs ADD COLUMN updated_by INTEGER REFERENCES profiles(id) ON DELETE SET NULL;
     """,
+    # v3: a dose per schedule, for tapers like "4 mg the evening of chemo, then 8 mg twice daily".
+    """
+    ALTER TABLE plans ADD COLUMN dose TEXT;
+    """,
 ]
 
 

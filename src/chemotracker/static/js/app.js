@@ -90,6 +90,48 @@
     }
   });
 
+  // Prescriptions: read pasted label text as you type and tick the matching medicines in the list.
+  const rx = document.querySelector("[data-rx]");
+  if (rx && window.fetch) {
+    const input = rx.querySelector("[data-rx-input]");
+    const out = rx.querySelector("[data-rx-preview]");
+    const readBtn = rx.querySelector("[data-rx-read]");
+    let timer = null, seq = 0;
+    const syncPicker = () => {
+      const keys = new Set($$("[data-rx-key]", out).filter((b) => b.checked && b.dataset.rxKey).map((b) => b.dataset.rxKey));
+      $$('input[name="keys[]"]').forEach((box) => {
+        const pick = box.closest(".pick");
+        const badge = pick && pick.querySelector(".rx-from");
+        if (keys.has(box.value)) {
+          if (!box.dataset.rxTicked && !box.checked) box.dataset.rxTicked = "1";
+          box.checked = true;
+          if (pick && !badge) { const b = document.createElement("span"); b.className = "rx-from"; b.textContent = "From your prescription"; pick.querySelector(".n").after(b); }
+        } else {
+          if (box.dataset.rxTicked) { box.checked = false; delete box.dataset.rxTicked; }
+          if (badge) badge.remove();
+        }
+      });
+    };
+    const read = async () => {
+      const text = input.value.trim();
+      const mine = ++seq;
+      if (!text) { out.innerHTML = ""; syncPicker(); return; }
+      out.innerHTML = '<p class="rx-loading">Reading…</p>';
+      const body = new FormData();
+      body.set("rx_text", input.value);
+      try {
+        const res = await fetch("/rx/preview", { method: "POST", body, credentials: "same-origin" });
+        if (mine !== seq) return;
+        out.innerHTML = res.ok ? await res.text() : "";
+        syncPicker();
+      } catch (e) { out.innerHTML = ""; }
+    };
+    input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(read, 450); });
+    out.addEventListener("change", (e) => { if (e.target.matches("[data-rx-key]")) syncPicker(); });
+    if (readBtn) readBtn.addEventListener("click", (e) => { e.preventDefault(); clearTimeout(timer); read(); });
+    if (out.children.length) syncPicker();
+  }
+
   // Setup: add another person row.
   $$("[data-add-person]").forEach((btn) => {
     btn.addEventListener("click", () => {

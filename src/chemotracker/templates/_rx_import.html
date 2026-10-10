@@ -1,0 +1,24 @@
+{# Optional "write in your prescriptions" step. Expects rx_* context from web._rx_context. #}
+{% from "_ui.html" import icon %}
+<section class="card rx-import" data-rx aria-labelledby="rx-h">
+  <div class="rx-head">
+    <span class="chip-ico">{{ icon("clipboard-paste") }}</span>
+    <div class="grow">
+      <div class="spread"><h2 id="rx-h">Write in your prescriptions</h2><span class="badge">Optional</span></div>
+      <p class="meta">Type or paste what's printed on each bottle, one medicine per line. The app fills in the dose, how often, and the days{% if rx_day1 %}, with dates from chemo day ({{ fmt_day(rx_day1) }}){% endif %}.</p>
+    </div>
+  </div>
+  <details class="rx-example">
+    <summary>See an example</summary>
+    <pre>{{ rx_example }}</pre>
+    <p class="meta">Spelling and capitals don't need to be exact. The order on the bottle doesn't matter either.</p>
+  </details>
+  <label class="visually-hidden" for="rx_text">Your prescriptions</label>
+  <textarea id="rx_text" name="rx_text" rows="5" data-rx-input spellcheck="false" autocapitalize="sentences"
+            placeholder="Ondansetron 8 mg tablet - Take 1 tablet by mouth every 8 hours as needed for nausea">{{ rx_text or "" }}</textarea>
+  <div class="rx-actions">
+    <button class="btn btn-secondary" type="submit" name="action" value="preview" formnovalidate data-rx-read>{{ icon("sparkles") }}Read it</button>
+    <span class="meta">Only the medicine details are kept. Names, addresses and Rx numbers are ignored.</span>
+  </div>
+  <div data-rx-preview aria-live="polite">{% if rx_meds %}{% include "_rx_preview.html" %}{% endif %}</div>
+</section>

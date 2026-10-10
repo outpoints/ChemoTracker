@@ -205,7 +205,7 @@ class Slot:
 
     @property
     def dose(self) -> str:
-        return self.plan["med_dose"] or ""
+        return self.plan["dose"] or self.plan["med_dose"] or ""
 
     def status(self, now: datetime) -> str:
         if self.log is not None:
@@ -614,7 +614,7 @@ def grid(conn: sqlite3.Connection, cycle: sqlite3.Row, now: datetime) -> tuple[l
     for plan in plans_for(conn, cycle):
         key = (plan["medication_id"], plan["kind"])
         if key not in rows:
-            detail = " · ".join(x for x in (plan["med_strength"], plan["med_dose"]) if x)
+            detail = " · ".join(x for x in (plan["med_strength"], plan["dose"] or plan["med_dose"]) if x)
             rows[key] = GridRow(plan["medication_id"], plan["med_name"], plan["kind"], detail, {d: GridCell() for d in days})
         if plan["kind"] == "as_needed":
             for dn in range(plan["start_day"], plan_end(plan, cycle) + 1):

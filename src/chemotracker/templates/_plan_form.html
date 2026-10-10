@@ -41,9 +41,15 @@
   </fieldset>
 </div>
 
+<div class="field-row">
+<div class="field">
+  <label for="dose-{{ p.id or 'new' }}">Dose for this schedule <span class="meta">(if different)</span></label>
+  <input id="dose-{{ p.id or 'new' }}" name="dose" type="text" value="{{ p.dose or '' }}" placeholder="For example: 2 tablets">
+</div>
 <div class="field">
   <label for="label-{{ p.id or 'new' }}">Short note shown with the dose <span class="meta">(optional)</span></label>
   <input id="label-{{ p.id or 'new' }}" name="label" type="text" value="{{ p.label or '' }}" placeholder="For example: with food, at bedtime">
+</div>
 </div>
 
 {% if show_cycles %}
