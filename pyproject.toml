@@ -1,31 +1,34 @@
 [project]
 name = "chemotracker"
-version = "0.1.0"
+version = "0.4.0"
 description = "Self-hosted chemotherapy supportive-medication tracker with Excel/CSV reports for the care team."
 readme = "README.md"
 license = "GPL-3.0-only"
 requires-python = ">=3.12,<3.13"
+# Exact versions on purpose. Every package (including the ones these pull in) is also locked
+# with a checksum in uv.lock, and Docker installs only from that lock. Update with
+# `uv lock --upgrade-package <name>` after reading the release notes, then run the tests.
 dependencies = [
-    "fastapi>=0.115",
-    "uvicorn>=0.32",
-    "jinja2>=3.1",
-    "python-multipart>=0.0.12",
-    "openpyxl>=3.1",
-    "itsdangerous>=2.2",
-    "tzdata>=2024.1",
+    "fastapi==0.143.0",
+    "uvicorn==0.54.0",
+    "jinja2==3.1.6",
+    "python-multipart==0.0.32",
+    "openpyxl==3.1.5",
+    "itsdangerous==2.2.0",
+    "tzdata==2026.5",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
-    "httpx>=0.27",
+    "pytest==9.1.1",
+    "httpx==0.28.1",
 ]
 
 [project.scripts]
 chemotracker = "chemotracker.__main__:main"
 
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling==1.32.4"]  # only for local development. The Docker image never builds the package
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

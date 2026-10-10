@@ -11,6 +11,8 @@
     <div class="dose-name"><a href="/medicines/{{ p.medication_id }}">{{ p.med_name }}</a>{% if p.med_strength %} <span class="meta">{{ p.med_strength }}</span>{% endif %}</div>
     {%- set detail = [slot.dose, p.label] | select | join(" · ") %}
     {%- if detail %}<div class="dose-detail">{{ detail }}</div>{% endif %}
+    {%- set prep = slot.prep_text(now) %}
+    {%- if prep %}<div class="dose-prep {{ 'is-now' if prep.endswith(' now') }}">{{ icon("refrigerator" if "fridge" in prep else "clock") }}<span>{{ prep }}</span></div>{% endif %}
     <div class="dose-status">{{ status_pill(slot, now) }}{% if slot.log %} {{ by_tag(people, slot.log.logged_by, slot.log.updated_by) }}{% endif %}</div>
   </div>
   <div class="dose-side">
@@ -61,6 +63,7 @@
       {% if plan.cycle %}
       <h1>Cycle {{ plan.cycle.number }} · Day {{ plan.day }}<span class="muted" style="font-weight:400"> of {{ plan.cycle.length_days }}</span></h1>
       {% set done, total = plan.counts() %}
+      {% if plan.day in (0, 1) %}<a class="moved-link" href="/cycles/{{ plan.cycle.id }}?change=1#change">Chemo moved to another day?</a>{% endif %}
       <p class="sub">{% if plan.day == 1 %}Chemo day{% elif plan.day == 0 %}Day before chemo{% elif plan.day > plan.cycle.length_days %}After the planned cycle{% endif %}{% if plan.day in (0, 1) or plan.day > plan.cycle.length_days %}{% if total %} · {% endif %}{% endif %}{% if total %}{{ done }} of {{ total }} planned doses logged{% elif plan.day not in (0, 1) %}No planned doses{% endif %}{% if plan.cycle.regimen %} · {{ plan.cycle.regimen }}{% endif %}</p>
       {% else %}
       <h1>Today</h1>
@@ -131,7 +134,7 @@
       <section class="card feel" aria-labelledby="feel-h">
         <div class="spread">
           <h2 id="feel-h">How are you feeling?</h2>
-          <a class="meta" href="/symptoms">History</a>
+          <a class="btn btn-quiet btn-sm head-link" href="/symptoms">History</a>
         </div>
         <div class="feel-grid">
           {% for s in quick %}
@@ -141,14 +144,14 @@
         </div>
         {% if feelings %}
         <div class="feel-recent" aria-label="Logged today">
-          {% for f in feelings[:6] %}{{ symptom_tag(f, fever_f, people) }}{% endfor %}
+          {% for f in feelings[:6] %}{{ symptom_tag(f, fever_f, people, temp_unit) }}{% endfor %}
         </div>
         {% endif %}
       </section>
       {% elif feelings %}
       <section class="card feel">
         <h2>Symptoms this day</h2>
-        <div class="feel-recent">{% for f in feelings %}{{ symptom_tag(f, fever_f, people) }}{% endfor %}</div>
+        <div class="feel-recent">{% for f in feelings %}{{ symptom_tag(f, fever_f, people, temp_unit) }}{% endfor %}</div>
       </section>
       {% endif %}
 
@@ -236,7 +239,7 @@
       {% endif %}
 
       {% if next_doses %}
-      <div class="card">
+      <div class="card only-desktop">
         <div class="card-head"><h3>Next up</h3></div>
         <ul class="list" style="margin-top: var(--s2)">
           {% for n in next_doses %}
@@ -251,8 +254,8 @@
 
       {% if focus %}
       {% set fp, finfo = focus %}
-      <div class="card card-pad">
-        <div class="spread"><h3>About {{ finfo.generic }}</h3><a class="meta" href="/medicines/{{ fp.medication_id }}">More</a></div>
+      <div class="card card-pad only-desktop">
+        <div class="spread"><h3>About {{ finfo.generic }}</h3><a class="btn btn-quiet btn-sm head-link" href="/medicines/{{ fp.medication_id }}">More</a></div>
         {{ med_info(finfo, compact=True) }}
       </div>
       {% endif %}

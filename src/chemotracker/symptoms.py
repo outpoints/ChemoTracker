@@ -24,9 +24,11 @@ class Symptom:
     urgent: bool = False  # always point to the care team when present
     icon: str = "dot"
 
-    def describe(self, severity: int | None, value: float | None) -> str:
+    def describe(self, severity: int | None, value: float | None, unit: str = "F") -> str:
         if self.kind == "temp" and value is not None:
-            return f"{value:.1f}\u00a0°F"
+            from .units import show
+
+            return show(value, unit)
         if self.kind == "pain" and value is not None:
             return f"{value:g} out of 10"
         if self.kind == "count" and value is not None:

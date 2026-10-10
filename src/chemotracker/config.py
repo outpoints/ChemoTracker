@@ -61,6 +61,10 @@ class Settings:
     backup_time: time
     backup_keep: int
     backup_enabled: bool
+    # Optional. Only answer these names (protects against DNS rebinding). Empty = any name.
+    allowed_hosts: tuple[str, ...] = ()
+    # Set when the app is only reached over HTTPS (a reverse proxy or `tailscale serve`).
+    secure_cookie: bool = False
 
 
 def load_settings(data_dir: str | Path | None = None, backup_dir: str | Path | None = None) -> Settings:
@@ -75,11 +79,32 @@ def load_settings(data_dir: str | Path | None = None, backup_dir: str | Path | N
         data_dir=root,
         db_path=root / "chemotracker.sqlite3",
         tz=_timezone(),
-        password=os.environ.get("CHEMO_PASSWORD") or None,
+        # Optional. Unset, empty, or only spaces means no password screen.
+        password=os.environ.get("CHEMO_PASSWORD", "").strip() or None,
         secret_key=_secret_key(root),
         backup_dir=backups,
         backup_interval_hours=max(_float("CHEMO_BACKUP_INTERVAL_HOURS", 24), 0.25),
         backup_time=backup_time,
         backup_keep=max(int(_float("CHEMO_BACKUP_KEEP", 30)), 1),
         backup_enabled=os.environ.get("CHEMO_BACKUP_ENABLED", "1").lower() not in ("0", "false", "no", "off"),
+        allowed_hosts=_hosts(os.environ.get("CHEMO_ALLOWED_HOSTS", "")),
+        secure_cookie=os.environ.get("CHEMO_SECURE_COOKIE", "").lower() in ("1", "true", "yes", "on"),
     )
+
+
+def _hosts(value: str) -> tuple[str, ...]:
+    """'chemo.example.com, 192.168.1.20:8000' -> ('chemo.example.com', '192.168.1.20'). Ports don't matter."""
+    out = []
+    for item in value.replace(";", ",").split(","):
+        item = item.strip().lower()
+        if not item:
+            continue
+        if item == "*":
+            return ("*",)
+        if item.startswith("[") and "]" in item:
+            out.append(item[1:item.index("]")])
+        elif item.count(":") == 1:
+            out.append(item.split(":")[0])
+        else:
+            out.append(item)
+    return tuple(out)

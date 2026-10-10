@@ -15,10 +15,11 @@ from playwright.sync_api import sync_playwright
 SHOTS = [
     # (file, path, device, theme, full_page)
     ("today-phone.png", "/", "phone", "light", False),
-    ("today-phone-night.png", "/", "phone", "dark", False),
+    ("today-phone-dark.png", "/", "phone", "dark", False),
     ("symptom-phone.png", "/symptoms/new?s=nausea", "phone", "light", False),
     ("symptom-saved-phone.png", "/symptoms/6/saved", "phone", "light", False),
     ("today-desktop.png", "/", "desktop", "light", False),
+    ("today-desktop-dark.png", "/", "desktop", "dark", False),
     ("cycle-desktop.png", "/cycles/1", "desktop", "light", False),
     ("people-phone.png", "/who", "phone", "light", False),
     ("setup-phone.png", "/setup/medicines", "phone", "light", False),

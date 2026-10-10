@@ -38,7 +38,7 @@
         {% set sym = lookup_symptom(row.symptom) %}
         <span class="dot s{{ score(row, fever_f) }}"></span>
         <div>
-          <div class="what">{{ row.label if row.symptom == "other" else sym.name }} · {{ sym.describe(row.severity, row.value) }}</div>
+          <div class="what">{{ row.label if row.symptom == "other" else sym.name }} · {{ sym.describe(row.severity, row.value, temp_unit) }}</div>
           {{ by_tag(people, row.logged_by, row.updated_by) }}
           {% if sym.kind == "severity" and row.severity %}<div class="note">{{ sym.levels[row.severity - 1] }}</div>{% endif %}
           {% if row.notes %}<div class="note">{{ row.notes }}</div>{% endif %}

@@ -5,7 +5,20 @@
 <div class="page page-narrow">
   <div class="page-head"><div><h1>Settings</h1></div></div>
 
-  <form class="card card-pad form" method="post" action="/settings">
+  <section class="card card-pad" aria-labelledby="look-h">
+    <h2 id="look-h">Light or dark</h2>
+    <fieldset class="theme-pick" style="margin-top: var(--s3)">
+      <legend class="visually-hidden">Theme</legend>
+      <div class="segmented">
+        <label><input type="radio" name="theme" value="auto" data-theme-pick>Automatic</label>
+        <label><input type="radio" name="theme" value="light" data-theme-pick>Light</label>
+        <label><input type="radio" name="theme" value="dark" data-theme-pick>Dark</label>
+      </div>
+    </fieldset>
+    <p class="hint" style="margin-top: var(--s2)">Automatic follows your phone or computer. Dark is easier on the eyes at bedtime. Only this device changes.</p>
+  </section>
+
+  <form class="card card-pad form" style="margin-top: var(--s5)" method="post" action="/settings">
     <h2>Care team</h2>
     <div class="field"><label for="patient_name">Name on the report <span class="meta">(optional)</span></label><input id="patient_name" name="patient_name" type="text" value="{{ prefs.patient_name }}" autocomplete="off"><p class="hint">Stays on this device. Shown at the top of the Excel report.</p></div>
     <div class="field"><label for="clinic_name">Clinic</label><input id="clinic_name" name="clinic_name" type="text" value="{{ prefs.clinic_name }}"></div>
@@ -13,7 +26,17 @@
       <div class="field"><label for="clinic_phone">Clinic phone</label><input id="clinic_phone" name="clinic_phone" type="tel" value="{{ prefs.clinic_phone }}"></div>
       <div class="field"><label for="after_hours_phone">After-hours phone</label><input id="after_hours_phone" name="after_hours_phone" type="tel" value="{{ prefs.after_hours_phone }}"></div>
     </div>
-    <div class="field"><label for="fever_f">Fever line (°F)</label><input id="fever_f" name="fever_f" type="number" step="0.1" min="97" max="104" value="{{ prefs.fever_f }}" style="max-width: 10ch"><p class="hint">Use the number on your care team's instructions. A temperature at or above it shows a "call now" message.</p></div>
+    <fieldset class="field">
+      <legend>Temperature unit</legend>
+      <div class="segmented" role="radiogroup">
+        <label><input type="radio" name="temp_unit" value="C" {% if temp_unit == "C" %}checked{% endif %} data-unit>°C (Celsius)</label>
+        <label><input type="radio" name="temp_unit" value="F" {% if temp_unit == "F" %}checked{% endif %} data-unit>°F (Fahrenheit)</label>
+      </div>
+    </fieldset>
+    <div class="field"><label for="fever_line">Fever line (<span data-unit-label>{{ "°C" if temp_unit == "C" else "°F" }}</span>)</label>
+      <input id="fever_line" name="fever_line" type="text" inputmode="decimal" value="{{ show_temp(fever_f, temp_unit, symbol=False) }}" style="max-width: 10ch" data-fever
+             data-fever-f="{{ fever_f }}" autocomplete="off">
+      <p class="hint">Use the number on your care team's instructions, often 38.0 °C / 100.4 °F. A temperature at or above it shows a "call now" message.</p></div>
     <div class="field"><label for="call_if">When to call (one per line)</label><textarea id="call_if" name="call_if" rows="4">{{ prefs.call_if }}</textarea><p class="hint">Copy these from your chemo teaching sheet.</p></div>
     <button class="btn btn-primary" type="submit">{{ icon("check") }}Save</button>
   </form>
@@ -23,17 +46,62 @@
     <p class="meta" style="margin-top: var(--s2)">Everyone who logs doses or symptoms. Each entry shows who logged it.{% if me %} This device is set to <strong>{{ me.name }}</strong> (<a href="/who">switch</a>).{% endif %}</p>
   </section>
 
-  <section class="card card-pad" style="margin-top: var(--s5)">
-    <h2>Appearance</h2>
-    <fieldset class="theme-pick" style="margin-top: var(--s3)">
-      <legend class="visually-hidden">Theme</legend>
-      <div class="segmented">
-        <label><input type="radio" name="theme" value="auto" data-theme-pick>Match device</label>
-        <label><input type="radio" name="theme" value="light" data-theme-pick>Light</label>
-        <label><input type="radio" name="theme" value="dark" data-theme-pick>Night</label>
+  <section class="card card-pad" id="reminders" style="margin-top: var(--s5)" aria-labelledby="rem-h">
+    <div class="spread"><h2 id="rem-h">Reminders on your phone</h2>
+      {% if prefs.ntfy_enabled == "1" and prefs.ntfy_topic %}<span class="pill pill-ok">On</span>{% else %}<span class="pill">Off</span>{% endif %}</div>
+    <p class="meta" style="margin-top: var(--s2)">Sends a notification when a dose is due, when a medicine needs getting ready (like out of the fridge), if a dose isn't marked after a while, and the evening before chemo. It uses <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy</a>, a free app.</p>
+    {% if nudger.last_error and prefs.ntfy_enabled == "1" %}<div class="error-box" role="alert" style="margin-top: var(--s3)">Last reminder didn't go through: {{ nudger.last_error }}</div>{% endif %}
+    {% set topic = prefs.ntfy_topic or suggested_topic %}
+    <details class="more" {% if not prefs.ntfy_topic %}open{% endif %}>
+      <summary>How to get them on each phone</summary>
+      <ol class="how-steps">
+        <li>Install <strong>ntfy</strong> from the App Store or Google Play.</li>
+        <li>Tap <strong>+</strong>, then type this topic name exactly: <code class="topic" id="topic-name">{{ topic }}</code></li>
+        <li>Leave the server as ntfy.sh unless you run your own. Do this on every phone that should get reminders.</li>
+      </ol>
+      <p class="hint">Anyone who knows the topic name can read the reminders, so keep the long random name and don't post it anywhere. To keep medicine names off the ntfy server, turn off "Show medicine names".</p>
+    </details>
+    <form class="form" method="post" action="/settings/reminders" style="margin-top: var(--s3)">
+      <label class="check"><input type="checkbox" name="ntfy_enabled" value="1" {% if prefs.ntfy_enabled == "1" %}checked{% endif %}><span><strong>Send reminders</strong></span></label>
+      <div class="field"><label for="ntfy_topic">Topic name</label>
+        <input id="ntfy_topic" name="ntfy_topic" type="text" value="{{ topic }}" autocomplete="off" autocapitalize="off" spellcheck="false" class="mono"></div>
+      <div class="field-row">
+        <div class="field"><label for="ntfy_lead">Remind me</label>
+          <select id="ntfy_lead" name="ntfy_lead">{% for v, t in [("0", "At the dose time"), ("5", "5 minutes before"), ("10", "10 minutes before"), ("15", "15 minutes before"), ("30", "30 minutes before"), ("60", "1 hour before")] %}<option value="{{ v }}" {% if prefs.ntfy_lead == v %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></div>
+        <div class="field"><label for="ntfy_nag">If it isn't marked</label>
+          <select id="ntfy_nag" name="ntfy_nag">{% for v, t in [("0", "Don't remind again"), ("15", "Remind after 15 minutes"), ("30", "Remind after 30 minutes"), ("60", "Remind after 1 hour"), ("90", "Remind after 90 minutes")] %}<option value="{{ v }}" {% if prefs.ntfy_nag == v %}selected{% endif %}>{{ t }}</option>{% endfor %}</select></div>
       </div>
-    </fieldset>
-    <p class="hint" style="margin-top: var(--s2)">Night mode is dim for bedtime doses. Saved on this device only.</p>
+      <label class="check"><input type="checkbox" name="ntfy_chemo" value="1" {% if prefs.ntfy_chemo != "0" %}checked{% endif %}><span>Remind the evening before chemo</span></label>
+      <label class="check"><input type="checkbox" name="ntfy_names" value="1" {% if prefs.ntfy_names != "0" %}checked{% endif %}><span>Show medicine names <span class="meta">(off: "Medicine due at 9:30 PM")</span></span></label>
+      <details class="more">
+        <summary>More options</summary>
+        <div class="stack" style="padding-bottom: var(--s3)">
+          <div class="field"><label for="app_url">Link address</label>
+            <input id="app_url" name="app_url" type="url" value="{{ prefs.app_url or suggested_url }}" autocomplete="off">
+            <p class="hint">Tapping a reminder opens this. Use the address family members type on their phones.</p></div>
+          <div class="field"><label for="ntfy_server">ntfy server</label>
+            <input id="ntfy_server" name="ntfy_server" type="url" value="{{ prefs.ntfy_server or 'https://ntfy.sh' }}" autocomplete="off">
+            <p class="hint">Your own ntfy server works too. On iPhones it needs "upstream-base-url" set to deliver right away.</p></div>
+          <div class="field"><label for="ntfy_token">Access token <span class="meta">(only for a protected topic)</span></label>
+            <input id="ntfy_token" name="ntfy_token" type="password" value="" autocomplete="off" placeholder="{{ 'Saved. Leave blank to keep it' if prefs.ntfy_token else 'tk_...' }}">
+            {% if prefs.ntfy_token %}<label class="check"><input type="checkbox" name="clear_token" value="1"><span>Remove the saved token</span></label>{% endif %}</div>
+        </div>
+      </details>
+      <div class="row-wrap">
+        <button class="btn btn-primary" type="submit">{{ icon("check") }}Save</button>
+      </div>
+    </form>
+    {% if prefs.ntfy_topic %}
+    <form method="post" action="/settings/reminders/test" style="margin-top: var(--s2)">
+      <button class="btn btn-secondary" type="submit">{{ icon("bell") }}Send a test</button>
+      {% if nudger.last_sent %}<span class="meta" style="margin-left: var(--s2)">Last reminder sent {{ fmt_rel(nudger.last_sent.date(), today) | lower }} at {{ fmt_time(nudger.last_sent) }}</span>{% endif %}
+    </form>
+    {% endif %}
+  </section>
+
+  <section class="card card-pad" style="margin-top: var(--s5)">
+    <div class="spread"><h2>Change history</h2><a class="btn btn-secondary btn-sm" href="/history">{{ icon("history") }}Open</a></div>
+    <p class="meta" style="margin-top: var(--s2)">{{ changes }} {{ "change" if changes == 1 else "changes" }} recorded. Every dose, symptom, medicine and setting that was added, changed or deleted, with who did it.</p>
   </section>
 
   <section class="card card-pad" id="backups" style="margin-top: var(--s5)">
@@ -54,10 +122,23 @@
       <a class="btn btn-secondary" href="/settings/database.sqlite3">{{ icon("download") }}Download a copy</a>
     </div>
     {% if files %}
-    <ul class="list" style="margin: var(--s4) calc(var(--s5) * -1) calc(var(--s5) * -1)">
-      {% for f in files %}<li class="list-item" style="min-height: 48px"><span class="mono grow" style="font-size: var(--fs-sm)">{{ f.name }}</span><span class="meta">{{ (f.stat().st_size / 1024) | round(0) | int }} KB</span></li>{% endfor %}
+    <h3 style="margin-top: var(--s5)">Restore</h3>
+    <p class="hint" style="margin-top: var(--s1)">Go back to an earlier copy if something went wrong. You'll see what's in it before anything changes.</p>
+    <ul class="list" style="margin: var(--s3) calc(var(--s5) * -1) 0">
+      {% for f in files %}
+      <li><a class="list-item" href="/settings/restore?file={{ f.name | urlencode }}">
+        <span class="grow"><span class="title">{{ fmt_rel(f.taken.date(), today) }}, {{ fmt_time(f.taken) }}</span><br>
+          <span class="meta">{{ f.kind }} · {{ (f.size / 1024) | round(0) | int }} KB</span></span>
+        <span class="meta">Restore</span>{{ icon("chevron-right", "chev") }}</a></li>
+      {% endfor %}
     </ul>
     {% endif %}
+    <form class="form" method="post" action="/settings/restore/upload" enctype="multipart/form-data" style="margin-top: var(--s4)">
+      <div class="field"><label for="restore_file">Restore from a file</label>
+        <input id="restore_file" name="file" type="file" accept=".sqlite3,application/vnd.sqlite3,application/octet-stream">
+        <p class="hint">A copy saved with "Download a copy", for example from another computer.</p></div>
+      <button class="btn btn-secondary" type="submit">{{ icon("upload") }}Check this file</button>
+    </form>
   </section>
 
   <section class="card card-pad" style="margin-top: var(--s5)">

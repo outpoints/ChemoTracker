@@ -11,7 +11,8 @@
     <label class="rx-include">
       <input type="checkbox" name="rx_include[]" value="{{ i }}" checked data-rx-key="{{ m.info_key or '' }}">
       <span class="grow"><span class="rx-name">{{ m.name or "Medicine name?" }}</span>{% if m.brand %} <span class="meta">({{ m.brand }})</span>{% endif %}
-        <span class="rx-tag {{ 'known' if m.info_key else 'own' }}">{{ "In the medicine list" if m.info_key else "Your own medicine" }}</span></span>
+        {% if rx_existing is defined and m.info_key in rx_existing %}<span class="rx-tag update">Already on your list · saving updates it</span>
+        {% else %}<span class="rx-tag {{ 'known' if m.info_key else 'own' }}">{{ "In the medicine list" if m.info_key else "Your own medicine" }}</span>{% endif %}</span>
     </label>
     {% if not m.info_key %}
     <div class="field rx-rename"><label for="rx_name_{{ i }}">Name</label><input id="rx_name_{{ i }}" name="rx_name_{{ i }}" type="text" value="{{ m.name }}" placeholder="Medicine name"></div>

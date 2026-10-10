@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ title or "Check before logging" }} · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon, call_card %}
+<div class="page page-narrow stack">
+  <div class="callout callout-warn">
+    {{ icon("triangle-alert") }}
+    <div class="grow">
+      <h1 class="callout-title">{{ title or "Check before you log this" }}</h1>
+      <p style="margin-top: var(--s2)">{{ warning }}</p>
+    </div>
+  </div>
+  <div class="card card-pad stack-sm">
+    <div class="meta">{{ lead or "You're logging" }}</div>
+    <div class="dose-name">{{ med.name }}{% if med.strength %} <span class="meta">{{ med.strength }}</span>{% endif %}</div>
+    <div class="meta">{{ fmt_rel(when.date(), today) }} at {{ fmt_time(when) }}</div>
+    {% if med.directions %}<p class="rx-sig" style="margin-top: var(--s2)">Label: {{ med.directions }}</p>{% endif %}
+  </div>
+  <p class="meta">{{ note or "If you already took it, log it so the record is right. If you're unsure, ask your care team before taking more." }}</p>
+  <form method="post" action="{{ action }}">
+    {% for k, v in fields.items() %}{% for one in (v if v is not string else [v]) %}<input type="hidden" name="{{ k }}{{ '[]' if v is not string else '' }}" value="{{ one }}">{% endfor %}{% endfor %}
+    <input type="hidden" name="confirm" value="1">
+    <div class="field-row">
+      <a class="btn {{ 'btn-primary' if cancel_primary else 'btn-secondary' }} btn-lg" href="{{ back_url }}">{{ cancel_label or "Don't log it" }}</a>
+      <button class="btn {{ 'btn-secondary' if cancel_primary else 'btn-primary' }} btn-lg" type="submit">{% if not cancel_primary %}{{ icon("check") }}{% endif %}{{ confirm_label or "I took it, log it" }}</button>
+    </div>
+  </form>
+  {{ call_card(prefs) }}
+</div>
+{% endblock %}

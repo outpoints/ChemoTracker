@@ -12,7 +12,17 @@
       <div class="field"><label for="clinic_phone">Clinic phone</label><input id="clinic_phone" name="clinic_phone" type="tel" value="{{ prefs.clinic_phone }}" autocomplete="off"></div>
       <div class="field"><label for="after_hours_phone">After-hours phone</label><input id="after_hours_phone" name="after_hours_phone" type="tel" value="{{ prefs.after_hours_phone }}" autocomplete="off"></div>
     </div>
-    <div class="field"><label for="fever_f">Fever line (°F)</label><input id="fever_f" name="fever_f" type="number" step="0.1" min="97" max="104" value="{{ prefs.fever_f }}" style="max-width: 10ch"><p class="hint">Use the temperature on your care team's instructions.</p></div>
+    <fieldset class="field">
+      <legend>Temperature unit</legend>
+      <div class="segmented" role="radiogroup">
+        <label><input type="radio" name="temp_unit" value="C" {% if temp_unit == "C" %}checked{% endif %} data-unit>°C (Celsius)</label>
+        <label><input type="radio" name="temp_unit" value="F" {% if temp_unit == "F" %}checked{% endif %} data-unit>°F (Fahrenheit)</label>
+      </div>
+    </fieldset>
+    <div class="field"><label for="fever_line">Fever line (<span data-unit-label>{{ "°C" if temp_unit == "C" else "°F" }}</span>)</label>
+      <input id="fever_line" name="fever_line" type="text" inputmode="decimal" value="{{ show_temp(fever_f, temp_unit, symbol=False) }}" style="max-width: 10ch" data-fever
+             data-fever-f="{{ fever_f }}" autocomplete="off">
+      <p class="hint">Use the temperature on your care team's instructions, often 38.0 °C / 100.4 °F.</p></div>
     <div class="field"><label for="call_if">When to call (one per line)</label><textarea id="call_if" name="call_if" rows="4">{{ prefs.call_if }}</textarea></div>
     <div class="field"><label for="patient_name">Name on the report <span class="meta">(optional)</span></label><input id="patient_name" name="patient_name" type="text" value="{{ prefs.patient_name }}" autocomplete="off"></div>
   </div>

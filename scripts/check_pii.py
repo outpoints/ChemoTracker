@@ -45,7 +45,8 @@ BLOCKED_NAMES = (".env", ".secret_key")
 PNG_ALLOWED = ("src/chemotracker/static/", "docs/screenshots/")
 SKIP_CONTENT = ("uv.lock",)
 # AI assistant config and prompts are kept local, so the public repo stays about the app.
-AI_FILES = ("agents.md", "claude.md", "gemini.md", ".cursorrules", ".windsurfrules", "copilot-instructions.md")
+AI_FILES = ("agents.md", "claude.md", "gemini.md", ".cursorrules", ".windsurfrules", "copilot-instructions.md",
+            "product.md", "design.md", "design.json")
 AI_DIRS = (".claude/", ".codex/", ".cursor/", ".windsurf/", ".continue/", ".gemini/", ".hermes/",
            ".interface-design/", ".impeccable/", ".aider")
 BINARY_SUFFIXES = (".png", ".woff2", ".woff", ".ico", ".gif")

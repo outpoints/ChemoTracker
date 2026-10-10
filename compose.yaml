@@ -14,6 +14,7 @@ services:
     ports:
       # CHEMO_BIND=0.0.0.0 (default) reaches other devices on your home network.
       # CHEMO_BIND=127.0.0.1 keeps it on this computer, e.g. behind `tailscale serve`.
+      # Never forward this port to the open internet (see SECURITY.md).
       - "${CHEMO_BIND:-0.0.0.0}:${CHEMO_PUBLISH_PORT:-8000}:8000"
     volumes:
       - ./data:/data

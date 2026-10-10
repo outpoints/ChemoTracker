@@ -13,13 +13,79 @@
     </div>
     <nav class="daynav" aria-label="Other cycles">
       {% if idx > 0 %}<a href="/cycles/{{ cycles[idx - 1].id }}" aria-label="Previous cycle">{{ icon("chevron-left") }}</a>{% endif %}
-      <a class="label" href="/report?cycle={{ cycle.id }}">Report</a>
+      <a class="btn btn-quiet btn-sm" href="/report?cycle={{ cycle.id }}">{{ icon("clipboard-list") }}Report</a>
       {% if idx < cycles | length - 1 %}<a href="/cycles/{{ cycles[idx + 1].id }}" aria-label="Next cycle">{{ icon("chevron-right") }}</a>{% endif %}
     </nav>
   </div>
 
+  {# ---------- phone: pick a day, see that day as a list ---------- #}
+  <section class="only-mobile cycle-days" id="days" aria-label="Days in this cycle">
+    <nav class="day-strip" aria-label="Pick a day">
+      {% for d in ring %}
+      <a class="day-chip {{ d.state }} {{ 'is-chemo' if d.is_chemo }} {{ 'is-today' if d.is_today }}" href="?day={{ d.day }}#days"
+         {% if d.day == sel %}aria-current="date"{% endif %}>
+        <span class="dc-label">{{ "Chemo" if d.is_chemo else ("Before" if d.day == 0 else "Day " ~ d.day) }}</span>
+        <span class="dc-date">{{ d.date.strftime("%a") }} {{ d.date.day }}</span>
+        <span class="dc-marks">{% if d.planned %}<i class="dc-dose"></i>{% endif %}{% if d.worst %}<i class="dc-sym s{{ d.worst }}"></i>{% endif %}</span>
+      </a>
+      {% endfor %}
+    </nav>
+    <article class="card day-detail">
+      <div class="card-head">
+        <div>
+          <h2>{{ day_label(sel) }}</h2>
+          <div class="meta">{{ fmt_rel(sel_date, today) }}{% if sel_date != today %} · {{ fmt_day(sel_date) }}{% endif %}</div>
+        </div>
+        <a class="btn btn-soft btn-sm" href="/?d={{ sel_date.isoformat() }}">{{ "Log doses" if sel_date <= today else "Open day" }}</a>
+      </div>
+      <div class="card-body">
+        {% set planned_items = day_items | rejectattr("0.kind", "equalto", "as_needed") | list %}
+        {% set prn_items = day_items | selectattr("0.kind", "equalto", "as_needed") | list %}
+        {% if day_items %}
+        {% for group, items in [("Planned", planned_items), ("As needed", prn_items)] if items %}
+        {% if planned_items and prn_items %}<h3 class="day-sub">{{ group }}</h3>{% endif %}
+        <ul class="day-list">
+          {% for r, c in items %}
+          <li>
+            <span class="dl-mark {{ 'taken' if c.taken else ('missing' if c.missing else ('skipped' if c.skipped else ('allowed' if r.kind == 'as_needed' else 'planned'))) }}">
+              {%- if c.taken %}{{ icon("check") }}{% elif c.missing %}!{% elif c.skipped %}–{% elif r.kind == "as_needed" %}{{ icon("pill") }}{% else %}{{ icon("clock") }}{% endif -%}
+            </span>
+            <span class="grow">
+              <a class="dl-name" href="/medicines/{{ r.medication_id }}">{{ r.name }}</a>
+              <span class="meta">{{ kind_names[r.kind] }}{% if r.detail %} · {{ r.detail }}{% endif %}</span>
+            </span>
+            <span class="dl-status">
+              {%- if c.taken %}{% for t in c.taken %}{{ "Given" if r.kind == "clinic" else (fmt_time(t.taken_at) if t.taken_at else "Taken") }}{% if not loop.last %}, {% endif %}{% endfor %}
+              {%- elif c.missing %}Not logged
+              {%- elif c.skipped %}Skipped
+              {%- elif r.kind == "as_needed" %}Not taken
+              {%- else %}{{ c.planned }} planned{% endif -%}
+            </span>
+          </li>
+          {% endfor %}
+        </ul>
+        {% endfor %}
+        {% else %}
+        <p class="meta">No medicines on this day.</p>
+        {% endif %}
+        {% if day_symptoms %}
+        <h3 class="day-sub">Symptoms</h3>
+        <div class="feel-recent">
+          {% for r, entries in day_symptoms %}
+          {% set best = namespace(row=entries[0], s=-1) %}
+          {% for e in entries %}{% set sc = score(e, fever_f) %}{% if sc > best.s %}{% set best.row = e %}{% set best.s = sc %}{% endif %}{% endfor %}
+          <span class="sev-tag s{{ best.s }}">{{ r.name }} · {{ lookup_symptom(best.row.symptom).describe(best.row.severity, best.row.value, temp_unit) }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </article>
+  </section>
+
   <div class="two-col">
     <div class="stack">
+      <details class="sheet-toggle" open>
+      <summary class="only-mobile">{{ icon("calendar-days") }}&nbsp;See the whole cycle as a sheet</summary>
       <p class="meta">✓ taken (time) · – skipped · ! not logged · ○ planned · shaded = as-needed allowed. Symptoms show the worst entry each day.</p>
       <div class="sheet-wrap">
         <table class="sheet">
@@ -62,7 +128,7 @@
               {% if entries %}
               {% set best = namespace(row=entries[0], s=-1) %}
               {% for e in entries %}{% set s = score(e, fever_f) %}{% if s > best.s %}{% set best.row = e %}{% set best.s = s %}{% endif %}{% endfor %}
-              <td class="cell s{{ best.s }} {{ 'today-col' if d == today }}">{{ lookup_symptom(best.row.symptom).describe(best.row.severity, best.row.value) | replace(" out of 10", "/10") }}</td>
+              <td class="cell s{{ best.s }} {{ 'today-col' if d == today }}">{{ lookup_symptom(best.row.symptom).describe(best.row.severity, best.row.value, temp_unit) | replace(" out of 10", "/10") }}</td>
               {% else %}
               <td class="cell {{ 'today-col' if d == today }}"></td>
               {% endif %}
@@ -73,24 +139,33 @@
           </tbody>
         </table>
       </div>
+      </details>
       {% if not med_rows %}<div class="card empty"><p>No medicines are scheduled for this cycle.</p></div>{% endif %}
     </div>
 
     <aside class="stack">
-      <div class="card card-pad">
+      <div class="card card-pad only-desktop">
         {{ ring_svg(ring, 0, cycle, 240) }}
         {{ ring_legend() }}
       </div>
-      <details class="card more" style="padding: 0 var(--s5)">
-        <summary>Change this cycle</summary>
+      <details class="card more" id="change" style="padding: 0 var(--s5)" {% if change %}open{% endif %}>
+        <summary>{{ icon("calendar-days") }}&nbsp;Chemo moved? Change the date</summary>
         <form class="form" method="post" action="/cycles/{{ cycle.id }}" style="padding-bottom: var(--s5)">
-          <div class="field-row">
-            <div class="field"><label>Cycle number</label><input name="number" type="number" min="1" max="99" value="{{ cycle.number }}" required></div>
-            <div class="field"><label>Days in the cycle</label><input name="length_days" type="number" min="1" max="90" value="{{ cycle.length_days }}" required></div>
-          </div>
-          <div class="field"><label>Chemo day (Day 1)</label><input name="day1" type="date" value="{{ cycle.day1 }}" required><p class="hint">Moving Day 1 moves every scheduled dose in this cycle.</p></div>
-          <div class="field"><label>Treatment name</label><input name="regimen" type="text" value="{{ cycle.regimen or '' }}"></div>
-          <div class="field"><label>Notes</label><textarea name="notes">{{ cycle.notes or '' }}</textarea></div>
+          <div class="field"><label>Chemo day (Day 1)</label><input name="day1" type="date" value="{{ cycle.day1 }}" required>
+            <p class="hint">Every dose in this cycle moves with it.</p></div>
+          {% if later %}
+          <label class="check"><input type="checkbox" name="shift_later" value="1" checked>
+            <span><span class="t">Move the {{ later }} {{ "cycle" if later == 1 else "cycles" }} after this one too</span>
+            <span class="d">Usually right when treatment is delayed. Untick if only this one moved.</span></span></label>
+          {% endif %}
+          <details class="more"><summary>More</summary>
+            <div class="field-row">
+              <div class="field"><label>Cycle number</label><input name="number" type="number" min="1" max="99" value="{{ cycle.number }}" required></div>
+              <div class="field"><label>Days in the cycle</label><input name="length_days" type="number" min="1" max="90" value="{{ cycle.length_days }}" required></div>
+            </div>
+            <div class="field"><label>Treatment name</label><input name="regimen" type="text" value="{{ cycle.regimen or '' }}"></div>
+            <div class="field"><label>Notes</label><textarea name="notes">{{ cycle.notes or '' }}</textarea></div>
+          </details>
           <button class="btn btn-primary" type="submit">Save</button>
         </form>
       </details>

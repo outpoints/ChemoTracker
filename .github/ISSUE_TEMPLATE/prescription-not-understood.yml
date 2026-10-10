@@ -1,0 +1,35 @@
+name: Prescription wording the app didn't understand
+description: Directions that were read wrong or not at all when typed or pasted in.
+labels: [prescription-reader]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Change every name, Rx number, pharmacy, prescriber, and date before pasting.** Keep the wording of the directions the same. Issues are public.
+  - type: textarea
+    id: text
+    attributes:
+      label: What you typed or pasted (with personal details removed)
+      render: text
+      placeholder: Examplemide 10 MG TAB - Take 1 tablet by mouth every 6 hours as needed for nausea
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should it have filled in?
+      placeholder: As needed, at least 6 hours apart, Days 1 to 5.
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Country or region (optional)
+      description: Labels are written differently in different places.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I removed real names, numbers, dates, and anything that identifies a person.
+          required: true

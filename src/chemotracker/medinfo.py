@@ -55,6 +55,8 @@ class MedInfo:
     tips: tuple[str, ...] = ()
     defaults: Defaults = field(default_factory=Defaults)
     chips: tuple[str, ...] = ()
+    # A step before each dose: (minutes ahead, what to do). From the product's instructions for use.
+    prep: tuple[int, str] | None = None
 
     @property
     def display(self) -> str:
@@ -547,8 +549,13 @@ _ENTRIES: list[MedInfo] = [
         ("Pain in the upper left belly or the tip of the left shoulder", "Fever, shortness of breath, or fast or difficult breathing",
          "Rash, hives, wheezing, or swelling of the face, eyes, or mouth", "Unusual bleeding or bruising", "Peeing less, or dark or bloody urine"),
         MED + "a692033.html",
+        # Neupogen and Zarxio labels: let the syringe reach room temperature for at least 30 minutes.
+        # https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=97cc73cc-b5b7-458a-a933-77b00523e193
+        tips=("Take it out of the fridge about 30 minutes before the shot so it can reach room temperature. "
+              "Don't warm it any other way, and don't shake it.",),
         defaults=Defaults(route="injection", kind="scheduled", days=(2, 8), times=("15:00",), label="Shot under the skin"),
         chips=("Bone or back aches", "Injection site redness", "Headache", "Tired"),
+        prep=(30, "Take it out of the fridge"),
     ),
     MedInfo(
         "pegfilgrastim", "Pegfilgrastim", ("Neulasta", "Neulasta Onpro", "Fulphila", "Udenyca", "Ziextenzo", "Nyvepria"), "blood",
@@ -560,9 +567,15 @@ _ENTRIES: list[MedInfo] = [
          "Swelling of the face, throat, or eyes, hives, or rash", "Swelling of the face or ankles, dark urine, or peeing less",
          "Unusual bleeding or bruising"),
         MED + "a607058.html",
-        tips=("With the on-body injector, note when the light shows the dose is done and log it here.",),
+        # Neulasta, Fulphila and Udenyca labels: out of the refrigerator 30 minutes before use.
+        # https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=fdfe5d72-6b80-435a-afa4-c5d74dd852ce
+        tips=("Prefilled syringe: take it out of the fridge about 30 minutes before the shot so it can reach room "
+              "temperature. Don't warm it any other way, and don't shake it.",
+              "With the on-body injector there's nothing to warm up. Note when the light shows the dose is done and "
+              "log it here. Clear \"Get it ready\" on the medicine page.",),
         defaults=Defaults(route="injection", kind="scheduled", days=(2, 2), times=("15:00",), label="Once this cycle"),
         chips=("Bone aches", "Arm or leg pain"),
+        prep=(30, "Take it out of the fridge"),
     ),
     # ------------------------------------------------------------ premeds
     MedInfo(

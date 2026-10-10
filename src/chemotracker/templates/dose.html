@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}How did it go? · ChemoTracker{% endblock %}
 {% block content %}
+{% from "_history.html" import history_card with context %}
 {% from "_ui.html" import icon, by_tag %}
 <div class="page page-narrow">
   <a class="btn btn-quiet" href="/" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Today</a>
@@ -16,6 +17,7 @@
   <form class="form card card-pad" method="post" action="/dose/{{ log.id }}">
     {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
     <input type="hidden" name="back" value="/">
+    <input type="hidden" name="seen" value="{{ log.updated_at }}">
     <input type="hidden" name="status" value="{{ log.status }}">
 
     {% if log.status == "taken" %}
@@ -83,6 +85,7 @@
   </details>
   {% endif %}
 
+  {% if events %}<div style="margin-top: var(--s4)">{{ history_card(events) }}</div>{% endif %}
   <form method="post" action="/dose/{{ log.id }}/delete" data-confirm="Remove this dose from the log?" style="margin-top: var(--s4)">
     <input type="hidden" name="back" value="/">
     <button class="btn btn-danger btn-block" type="submit">{{ icon("trash") }}Remove from log</button>

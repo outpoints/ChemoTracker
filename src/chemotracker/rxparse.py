@@ -192,6 +192,8 @@ class ParsedMed:
     notes: list[str] = field(default_factory=list)
     cycle_hint: int | None = None
     indication: str | None = None
+    prep_minutes: int | None = None
+    prep_note: str | None = None
 
     @property
     def kind(self) -> str:
@@ -837,6 +839,13 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
             else:
                 med.notes.append(f"Label limit: no more than {_fmt(limit)} {unit_word}s in 24 hours. The app can't count that for you, "
                                  "so keep track when doses vary.")
+    # "Remove from refrigerator 30 minutes before use" / "let it sit at room temperature for 30 minutes"
+    fridge = re.search(r"(?:out of|from) (?:the )?(?:fridge|refrigerator)\b[^.;]*?(\d{1,3})\s*(?:min|minutes?)\b"
+                       r"|room temperature[^.;]*?(\d{1,3})\s*(?:min|minutes?)\b", directions, re.I)
+    if fridge:
+        med.prep_minutes = int(fridge.group(1) or fridge.group(2))
+        med.prep_note = "Take it out of the fridge"
+        med.notes.append(f"Reminder to take it out of the fridge {med.prep_minutes} minutes before each dose.")
     if med.cycle_hint:
         med.notes.append(f"Label mentions a {med.cycle_hint}-day cycle. Check your cycle length matches.")
     if med.matched_by == "spelling":

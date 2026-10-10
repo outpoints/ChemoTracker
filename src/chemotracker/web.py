@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import hmac
+import logging
 import re
 import io
 import sqlite3
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -16,12 +19,24 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, backup, export, icons, medinfo, profiles, rxparse, schedule, store
+from . import __version__, backup, export, history, security, icons, medinfo, profiles, reminders, rxparse, schedule, store, units
 from . import symptoms as sx
 from .config import PACKAGE_DIR, Settings, load_settings
-from .db import get_settings, migrate, put_settings, session
+from .db import MIGRATIONS, atomic, get_settings, lock_data_dir, migrate, put_settings, quick_check, schema_version, session
+
+log = logging.getLogger("chemotracker.web")
+
+# Set per request by the middleware: requests that change things take the database
+# write lock at the start of their transaction (see db.session).
+_WRITE: contextvars.ContextVar[bool] = contextvars.ContextVar("chemotracker_write", default=True)
+# True while this request holds the write lock. A nested lookup (who's using this device,
+# rendering a page) then reads on its own connection instead of waiting on its own lock.
+_IN_WRITE: contextvars.ContextVar[bool] = contextvars.ContextVar("chemotracker_in_write", default=False)
+# The person using this device, recorded in the change history for every write.
+_ACTOR: contextvars.ContextVar[int | None] = contextvars.ContextVar("chemotracker_actor", default=None)
 
 PUBLIC_PATHS = ("/static/", "/healthz", "/login", "/manifest.webmanifest")
 # Pages that work before anyone on this device has said who they are.
@@ -29,26 +44,99 @@ NO_PROFILE_PATHS = PUBLIC_PATHS + ("/who", "/people", "/setup", "/logout", "/rep
                                    "/settings/database")
 
 
+LEAD_CHOICES = ("0", "5", "10", "15", "30", "60")
+NAG_CHOICES = ("0", "15", "30", "60", "90")
+TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _reminder_values(data: dict, prefs: dict[str, str]) -> dict[str, str]:
+    topic = str(data.get("ntfy_topic") or "").strip()
+    server = str(data.get("ntfy_server") or reminders.DEFAULT_SERVER).strip().rstrip("/")
+    app_url = str(data.get("app_url") or "").strip().rstrip("/")
+    on = data.get("ntfy_enabled") == "1"
+    if on and not topic:
+        raise store.InvalidInput("Pick a topic name for reminders.")
+    if topic and not TOPIC_RE.match(topic):
+        raise store.InvalidInput("Topic names can use letters, numbers, - and _ only.")
+    if not re.match(r"^https?://[^\s/]+", server):
+        raise store.InvalidInput("The server should start with https:// (for example https://ntfy.sh).")
+    if app_url and not re.match(r"^https?://[^\s]+$", app_url):
+        raise store.InvalidInput("The link address should start with http:// or https://.")
+    token = str(data.get("ntfy_token") or "").strip()
+    if data.get("clear_token") == "1":
+        token = ""
+    elif not token:
+        token = prefs.get("ntfy_token", "")  # blank field keeps the saved token
+    return {
+        "ntfy_enabled": "1" if on else "",
+        "ntfy_topic": topic,
+        "ntfy_server": server,
+        "ntfy_token": token,
+        "ntfy_lead": str(data.get("ntfy_lead")) if str(data.get("ntfy_lead")) in LEAD_CHOICES else "0",
+        "ntfy_nag": str(data.get("ntfy_nag")) if str(data.get("ntfy_nag")) in NAG_CHOICES else "30",
+        "ntfy_chemo": "1" if data.get("ntfy_chemo") == "1" else "0",
+        "ntfy_names": "1" if data.get("ntfy_names") == "1" else "0",
+        "app_url": app_url,
+    }
+
+
+def _already_text(existing: sqlite3.Row, med: sqlite3.Row, my_id: int | None) -> str:
+    who = "You" if my_id is not None and my_id == (existing["updated_by"] or existing["logged_by"]) \
+        else (existing["who"] or "Someone")
+    if existing["status"] == "taken" and existing["taken_at"]:
+        return f"{who} already marked {med['name']} taken at {schedule.fmt_time(existing['taken_at'])}."
+    if existing["status"] == "taken":
+        return f"{who} already marked {med['name']} given."
+    return f"{who} already marked {med['name']} skipped."
+
+
+def _backup_before_upgrade(cfg: Settings) -> None:
+    """Copy the database before a new version changes its structure. No copy, no upgrade."""
+    if not cfg.db_path.exists():
+        return
+    current = schema_version(cfg.db_path)
+    if 0 < current < len(MIGRATIONS):
+        stamp = datetime.now(cfg.tz).strftime("%Y%m%d-%H%M%S")
+        target = backup.free_name(cfg.backup_dir, f"{backup.PREFIX}{stamp}-before-upgrade-v{current}")
+        backup.snapshot(cfg, target)
+        log.info("copied the database to %s before upgrading it", target)
+
+
 def create_app(settings: Settings | None = None, start_scheduler: bool = True) -> FastAPI:
     cfg = settings or load_settings()
+    # The real server (not tests) holds a lock so a second copy can't open the same database.
+    data_lock = lock_data_dir(cfg.data_dir) if start_scheduler else None
+    _backup_before_upgrade(cfg)
     migrate(cfg.db_path)
+    db_health = quick_check(cfg.db_path)
+    if db_health != "ok":
+        log.error("database check failed: %s. Restore the newest good backup (see README).", db_health)
+    schedule.set_timezone(cfg.tz)
     scheduler = backup.BackupScheduler(cfg)
+    nudger = reminders.ReminderScheduler(cfg)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         if start_scheduler:
             scheduler.start()
+            nudger.start()
         yield
         scheduler.stop()
+        nudger.stop()
 
     app = FastAPI(title="ChemoTracker", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.cfg = cfg
     app.state.scheduler = scheduler
+    app.state.data_lock = data_lock
+    app.state.db_health = db_health
+    app.state.reminders = nudger
     templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
     _template_globals(templates)
 
     @app.middleware("http")
     async def auth_gate(request: Request, call_next):
+        _WRITE.set(request.method not in ("GET", "HEAD"))
+        _ACTOR.set(request.session.get("profile_id"))
         nxt = request.url.path + (f"?{request.url.query}" if request.url.query else "")
         if cfg.password and not request.url.path.startswith(PUBLIC_PATHS) and not request.session.get("auth"):
             return RedirectResponse(f"/login?{urlencode({'next': nxt})}", status_code=303)
@@ -62,25 +150,62 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 else:
                     return RedirectResponse(f"/who?{urlencode({'next': nxt})}", status_code=303)
         response = await call_next(request)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("Referrer-Policy", "same-origin")
-        response.headers.setdefault("X-Frame-Options", "DENY")
         if not request.url.path.startswith("/static/"):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
 
     # Added after the gate so it wraps it (Starlette applies middleware outermost-last).
     app.add_middleware(SessionMiddleware, secret_key=cfg.secret_key, same_site="lax", max_age=60 * 60 * 24 * 60,
-                       session_cookie="chemotracker")
+                       session_cookie="chemotracker", https_only=cfg.secure_cookie)
+
+    # Outermost: checks every request before anything else runs (see security.py).
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        if not security.host_allowed(request, cfg.allowed_hosts):
+            return security.refuse(400, "Unknown address",
+                                   "ChemoTracker isn't set up to answer at this address. If it's yours, add it to "
+                                   "CHEMO_ALLOWED_HOSTS in the .env file and restart.")
+        if request.method in security.UNSAFE_METHODS and not security.same_origin(request):
+            return security.refuse(403, "Blocked a change from another site",
+                                   "Changes can only be made from ChemoTracker's own pages. Go back, reload the page, "
+                                   "and try again.")
+        response = await call_next(request)
+        for name, value in security.HEADERS.items():
+            response.headers.setdefault(name, value)
+        return response
+
+    throttle = security.LoginThrottle()
+    app.state.login_throttle = throttle
     app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
+    # Asset URLs change whenever the CSS or JS changes, so phones never keep a stale look after an update.
+    asset_v = hashlib.sha256(b"".join((PACKAGE_DIR / "static" / f).read_bytes()
+                                      for f in ("css/app.css", "js/app.js", "js/theme.js"))).hexdigest()[:10]
 
     # ------------------------------------------------------------ helpers
 
     def now() -> datetime:
         return datetime.now(cfg.tz).replace(tzinfo=None, second=0, microsecond=0)
 
+    def _changed_text(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
+        """Shown when someone saved this entry after you opened it. Their version is on screen."""
+        person = profiles.get(conn, row["updated_by"] or row["logged_by"]) if (row["updated_by"] or row["logged_by"]) else None
+        who = person["name"] if person else "Someone"
+        when = datetime.fromisoformat(row["updated_at"]).astimezone(cfg.tz)
+        return (f"{who} changed this at {schedule.fmt_time(when)} while you had it open. This is their version now. "
+                f"Make your change again if it's still needed.")
+
+    @contextmanager
     def db():
-        return session(cfg.db_path)
+        if not _WRITE.get() or _IN_WRITE.get():
+            with session(cfg.db_path) as conn:
+                yield conn
+            return
+        token = _IN_WRITE.set(True)
+        try:
+            with session(cfg.db_path, write=True, actor=_ACTOR.get()) as conn:
+                yield conn
+        finally:
+            _IN_WRITE.reset(token)
 
     def me(request: Request) -> int | None:
         """The person using this device, if they still exist and are active."""
@@ -107,9 +232,13 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 "today": current.date(),
                 "prefs": prefs,
                 "fever_f": _fever(prefs),
+                "temp_unit": units.norm(prefs.get("temp_unit")),
+                "fever_show": units.show(_fever(prefs), prefs.get("temp_unit", "F")),
                 "flash": request.session.pop("flash", None),
                 "password_on": bool(cfg.password),
                 "version": __version__,
+                "asset_v": asset_v,
+                "db_health": app.state.db_health,
                 "people": people,
                 "me": current_person if current_person and current_person["active"] else None,
                 **context,
@@ -177,9 +306,16 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     @app.post("/login")
     async def login(request: Request):
         data = await form(request)
+        who = request.client.host if request.client else "unknown"
+        if throttle.blocked(who):
+            return render(request, "login.html", status_code=429, nxt=back(data.get("next")),
+                          error="Too many wrong tries. Wait 15 minutes, then try again.")
         if cfg.password and hmac.compare_digest(str(data.get("password", "")).encode(), cfg.password.encode()):
+            throttle.succeeded(who)
+            request.session.clear()  # a fresh session after signing in
             request.session["auth"] = True
             return go(back(data.get("next")))
+        throttle.failed(who)
         return render(request, "login.html", status_code=401, nxt=back(data.get("next")), error="That password didn't match.")
 
     @app.post("/logout")
@@ -238,7 +374,29 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 default_time = datetime.combine(slot.date, current.time())
             taken_at = store.parse_local_dt(data.get("taken_at"), default_time)
             med = store.medication(conn, plan_row["medication_id"])
-            log_id = store.log_slot(conn, plan_row, slot.key, status, taken_at, slot.dose or None, by=me(request))
+            # The button is only shown for doses nobody has recorded. If there's an entry now,
+            # someone else recorded it after this page loaded: say so instead of overwriting it.
+            existing = store.slot_log(conn, plan_row["id"], slot.key)
+            my_id = me(request)
+            repeat_tap = existing is not None and existing["status"] == status \
+                and (existing["updated_by"] or existing["logged_by"]) == my_id \
+                and datetime.now(cfg.tz) - datetime.fromisoformat(existing["updated_at"]) < timedelta(minutes=2)
+            if existing and repeat_tap:
+                # The same person's double tap. The browser shows this second response, so it reads
+                # exactly like the first one did, and nothing changes.
+                log_id = existing["id"]
+                taken_at = schedule.parse_local(existing["taken_at"]) or taken_at
+            elif existing and data.get("confirm") != "1" and med is not None:
+                return render(request, "dose_confirm.html", status_code=409, active="today", med=med,
+                              title="Already recorded", when=taken_at, back_url=back(data.get("back")),
+                              warning=_already_text(existing, med, my_id),
+                              action="/slot", fields={k: v for k, v in data.items() if k != "confirm"},
+                              lead="You tapped", cancel_label="Leave it as it is", cancel_primary=True,
+                              confirm_label="Replace it with mine",
+                              note="Only replace it if the entry above is wrong. Don't give a second dose unless "
+                                   "your care team says to.")
+            else:
+                log_id = store.log_slot(conn, plan_row, slot.key, status, taken_at, slot.dose or None, by=my_id)
         name = med["name"] if med else "Dose"
         msg = (
             {"text": f"{name} marked taken at {schedule.fmt_time(taken_at)}.", "undo": log_id,
@@ -262,6 +420,11 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             med = store.medication(conn, int(data["medication_id"]))
             if med is None:
                 raise HTTPException(404)
+            warning = schedule.early_dose_warning(conn, med, current, by=me(request))
+            if warning and data.get("confirm") != "1":
+                return render(request, "dose_confirm.html", active="today", med=med, warning=warning,
+                              action="/dose/quick", fields={k: v for k, v in data.items() if k != "confirm"},
+                              when=current, back_url=back(data.get("back")))
             log_id = store.log_dose(conn, med["id"], current, med["dose"], data.get("reason"),
                                     int(data["plan_id"]) if data.get("plan_id") else None, by=me(request))
         return go(back(data.get("back")),
@@ -288,6 +451,13 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 raise HTTPException(404)
             try:
                 when = store.parse_local_dt(data.get("taken_at"), current)
+                if when > current + timedelta(minutes=5):
+                    raise store.InvalidInput("That time hasn't happened yet. Log a dose after you take it.")
+                warning = schedule.early_dose_warning(conn, m, when, by=me(request))
+                if warning and data.get("confirm") != "1":
+                    return render(request, "dose_confirm.html", active="today", med=m, warning=warning,
+                                  action="/dose/new", fields={k: v for k, v in data.items() if k != "confirm"},
+                                  when=when, back_url="/")
                 log_id = store.log_dose(conn, m["id"], when, data.get("dose"), data.get("reason"), by=me(request))
             except store.InvalidInput as exc:
                 return render(request, "dose_new.html", status_code=400, active="today", med=m,
@@ -300,8 +470,9 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             row = store.dose_log(conn, log_id)
             if row is None:
                 raise HTTPException(404)
+            events = history.events(conn, cfg.tz, "dose", log_id)
         return render(request, "dose.html", active="today", log=row, saved=bool(saved), error=None,
-                      chips=medinfo.chips_for(row["med_info"]), info=medinfo.lookup(row["med_info"]))
+                      chips=medinfo.chips_for(row["med_info"]), info=medinfo.lookup(row["med_info"]), events=events)
 
     @app.post("/dose/{log_id}")
     async def save_dose(request: Request, log_id: int):
@@ -310,6 +481,10 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             row = store.dose_log(conn, log_id)
             if row is None:
                 raise HTTPException(404)
+            if data.get("seen") and data["seen"] != row["updated_at"]:
+                return render(request, "dose.html", status_code=409, active="today", log=row, saved=False,
+                              error=_changed_text(conn, row), chips=medinfo.chips_for(row["med_info"]),
+                              info=medinfo.lookup(row["med_info"]))
             try:
                 store.update_dose_log(conn, log_id, data, now(), by=me(request))
             except store.InvalidInput as exc:
@@ -390,14 +565,25 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             entry = store.symptom_log(conn, entry_id)
             if entry is None:
                 raise HTTPException(404)
+            events = history.events(conn, cfg.tz, "symptom", entry_id)
         values = dict(entry)
         values["logged_at"] = entry["logged_at"].replace(" ", "T")
         return render(request, "symptom_form.html", active="symptoms", sym=sx.lookup(entry["symptom"]), entry=entry,
-                      error=None, values=values, all_symptoms=sx.SYMPTOMS)
+                      error=None, values=values, all_symptoms=sx.SYMPTOMS, events=events)
 
     @app.post("/symptoms/{entry_id}")
     async def save_symptom(request: Request, entry_id: int):
         data = await form(request)
+        with db() as conn:
+            entry = store.symptom_log(conn, entry_id)
+            if entry is None:
+                raise HTTPException(404)
+            if data.get("seen") and data["seen"] != entry["updated_at"]:
+                values = dict(entry)
+                values["logged_at"] = entry["logged_at"].replace(" ", "T")
+                return render(request, "symptom_form.html", status_code=409, active="symptoms",
+                              sym=sx.lookup(entry["symptom"]), entry=entry, error=_changed_text(conn, entry),
+                              values=values, all_symptoms=sx.SYMPTOMS)
         try:
             with db() as conn:
                 store.update_symptom(conn, entry_id, data, now(), by=me(request))
@@ -480,16 +666,16 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         data = await form(request)
         parsed = rxparse.parse(str(data.get("rx_text") or ""))
         if not parsed:
-            return go(f"/medicines/{med_id}", "Couldn't read that. Type the directions from the label.", request)
+            return go(f"/medicines/{med_id}?edit=1", "Couldn't read that. Type the directions from the label.", request)
         with db() as conn:
             if store.medication(conn, med_id) is None:
                 raise HTTPException(404)
             store.import_parsed(conn, parsed[0], into=med_id)
         extra = " Only the first medicine was used." if len(parsed) > 1 else ""
-        return go(f"/medicines/{med_id}#plans", f"Filled in from the label. Check the schedule below.{extra}", request)
+        return go(f"/medicines/{med_id}", f"Filled in from the label. Check the details below.{extra}", request)
 
     @app.get("/medicines/{med_id}", response_class=HTMLResponse)
-    def medicine_page(request: Request, med_id: int, new: int = 0):
+    def medicine_page(request: Request, med_id: int, new: int = 0, edit: int = 0):
         with db() as conn:
             med = store.medication(conn, med_id)
             if med is None:
@@ -498,8 +684,10 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             recent = store.recent_doses(conn, med_id, 12)
             cycles = schedule.all_cycles(conn)
             length = max([c["length_days"] for c in cycles] + [14])
+            events = history.for_medicine(conn, cfg.tz, med_id)
         return render(request, "medicine.html", active="medicines", med=med, plans=plans, recent=recent,
-                      info=medinfo.lookup(med["info_key"]), is_new=bool(new), error=None, length=length)
+                      info=medinfo.lookup(med["info_key"]), is_new=bool(new), edit=bool(edit), error=None, length=length,
+                      events=events)
 
     @app.post("/medicines/{med_id}")
     async def save_medicine(request: Request, med_id: int):
@@ -508,8 +696,8 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             with db() as conn:
                 store.update_medication(conn, med_id, data)
         except store.InvalidInput as exc:
-            return go(f"/medicines/{med_id}", str(exc), request)
-        return go(back(data.get("back"), f"/medicines/{med_id}"), "Label saved.", request)
+            return go(f"/medicines/{med_id}?edit=1", str(exc), request)
+        return go(back(data.get("back"), f"/medicines/{med_id}"), "Saved.", request)
 
     @app.post("/medicines/{med_id}/active")
     async def toggle_medicine(request: Request, med_id: int):
@@ -532,8 +720,8 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             with db() as conn:
                 store.create_plan(conn, med_id, data)
         except store.InvalidInput as exc:
-            return go(f"/medicines/{med_id}#plans", str(exc), request)
-        return go(f"/medicines/{med_id}#plans", "Schedule added.", request)
+            return go(f"/medicines/{med_id}?edit=1#plans", str(exc), request)
+        return go(f"/medicines/{med_id}", "Schedule added.", request)
 
     @app.post("/plans/{plan_id}")
     async def save_plan(request: Request, plan_id: int):
@@ -546,8 +734,8 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             try:
                 store.update_plan(conn, plan_id, data)
             except store.InvalidInput as exc:
-                return go(back(data.get("back"), f"/medicines/{med_id}#plans"), str(exc), request)
-        return go(back(data.get("back"), f"/medicines/{med_id}#plans"), "Schedule saved.", request)
+                return go(f"/medicines/{med_id}?edit=1#plans", str(exc), request)
+        return go(f"/medicines/{med_id}", "Schedule saved.", request)
 
     @app.post("/plans/{plan_id}/delete")
     async def remove_plan(request: Request, plan_id: int):
@@ -556,7 +744,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             if row is None:
                 raise HTTPException(404)
             store.delete_plan(conn, plan_id)
-        return go(f"/medicines/{row['medication_id']}#plans", "Schedule removed.", request)
+        return go(f"/medicines/{row['medication_id']}?edit=1#plans", "Schedule removed.", request)
 
     # ------------------------------------------------------------ cycles
 
@@ -585,7 +773,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         return go(f"/cycles/{ids[0]}", "Cycle added. Medicines follow their schedules from its Day 1.", request)
 
     @app.get("/cycles/{cycle_id}", response_class=HTMLResponse)
-    def cycle_page(request: Request, cycle_id: int):
+    def cycle_page(request: Request, cycle_id: int, day: int | None = None, change: int = 0):
         current = now()
         with db() as conn:
             c = store.cycle(conn, cycle_id)
@@ -595,18 +783,37 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             prefs = get_settings(conn)
             ring = schedule.ring(conn, c, current.date(), _fever(prefs))
             cycles = schedule.all_cycles(conn)
+        today_n = schedule.day_number(c, current.date())
+        if day is None or day not in days:
+            day = today_n if today_n in days else 1
+        day_items = [(r, r.cells[day]) for r in med_rows
+                     if r.cells[day].planned or r.cells[day].taken or r.cells[day].skipped or r.cells[day].allowed]
+        day_symptoms = [(r, r.cells[day]) for r in sym_rows if r.cells[day]]
         return render(request, "cycle.html", active="cycles", cycle=c, days=days, med_rows=med_rows,
-                      sym_rows=sym_rows, ring=ring, cycles=cycles, score=schedule.symptom_score)
+                      sym_rows=sym_rows, ring=ring, cycles=cycles, score=schedule.symptom_score, sel=day,
+                      sel_date=schedule.date_of(c, day), day_items=day_items, day_symptoms=day_symptoms,
+                      change=bool(change), later=sum(1 for x in cycles if x["number"] > c["number"]))
 
     @app.post("/cycles/{cycle_id}")
     async def save_cycle(request: Request, cycle_id: int):
         data = await form(request)
+        moved_note = ""
         try:
             with db() as conn:
+                before = store.cycle(conn, cycle_id)
+                if before is None:
+                    raise HTTPException(404)
                 store.update_cycle(conn, cycle_id, data)
+                after = store.cycle(conn, cycle_id)
+                delta = (date.fromisoformat(after["day1"]) - date.fromisoformat(before["day1"])).days
+                if delta and data.get("shift_later"):
+                    n = store.shift_later_cycles(conn, after["number"], delta)
+                    if n:
+                        moved_note = f" The {n} {'cycle' if n == 1 else 'cycles'} after it moved {abs(delta)} " \
+                                     f"{'day' if abs(delta) == 1 else 'days'} {'later' if delta > 0 else 'earlier'} too."
         except store.InvalidInput as exc:
-            return go(f"/cycles/{cycle_id}", str(exc), request)
-        return go(f"/cycles/{cycle_id}", "Cycle saved.", request)
+            return go(f"/cycles/{cycle_id}?change=1", str(exc), request)
+        return go(f"/cycles/{cycle_id}", "Cycle saved." + moved_note, request)
 
     @app.post("/cycles/{cycle_id}/delete")
     async def remove_cycle(request: Request, cycle_id: int):
@@ -677,20 +884,98 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request):
         with db() as conn:
-            history = conn.execute("SELECT * FROM backups ORDER BY id DESC LIMIT 8").fetchall()
-        files = backup.list_backups(cfg.backup_dir)[:8]
-        return render(request, "settings.html", active="settings", history=history, files=files, cfg=cfg,
-                      next_backup=scheduler.next_at or backup.next_run(cfg, now()))
+            backup_log = conn.execute("SELECT * FROM backups ORDER BY id DESC LIMIT 8").fetchall()
+            changes = history.count(conn)
+        files = backup.backup_files(cfg)[:12]
+        return render(request, "settings.html", active="settings", history=backup_log, files=files, cfg=cfg,
+                      next_backup=scheduler.next_at or backup.next_run(cfg, now()), changes=changes,
+                      nudger=nudger, suggested_topic=reminders.new_topic(),
+                      suggested_url=str(request.base_url).rstrip("/"))
+
+    # ------------------------------------------------------------ reminders
+
+    @app.post("/settings/reminders")
+    async def save_reminders(request: Request):
+        data = await form(request)
+        with db() as conn:
+            prefs = get_settings(conn)
+        try:
+            values = _reminder_values(data, prefs)
+        except store.InvalidInput as exc:
+            return go("/settings#reminders", str(exc), request)
+        with db() as conn:
+            put_settings(conn, values)
+        msg = "Reminders are on. Send a test to check your phone." if values["ntfy_enabled"] == "1" else "Reminders are off."
+        return go("/settings#reminders", msg, request)
+
+    @app.post("/settings/reminders/test")
+    async def test_reminders(request: Request):
+        with db() as conn:
+            prefs = get_settings(conn)
+        if not prefs.get("ntfy_topic"):
+            return go("/settings#reminders", "Save a topic first.", request)
+        try:
+            await run_in_threadpool(reminders.send, prefs, reminders.test_reminder(prefs))
+        except Exception as exc:  # noqa: BLE001 - shown to the person who tapped Test
+            return go("/settings#reminders", f"The test didn't go through: {exc}", request)
+        return go("/settings#reminders", f"Test sent to {prefs['ntfy_topic']}. It should be on your phone now.", request)
+
+    # ------------------------------------------------------------ restore
+
+    @app.get("/settings/restore", response_class=HTMLResponse)
+    def restore_page(request: Request, file: str = ""):
+        try:
+            path = backup.find(cfg, file)
+            info = backup.inspect(path)
+        except backup.RestoreError as exc:
+            return go("/settings#backups", str(exc), request)
+        with db() as conn:
+            current = {t: conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0] for t, tbl in
+                       (("doses", "dose_logs"), ("symptoms", "symptom_logs"), ("medicines", "medications"), ("cycles", "cycles"))}
+        return render(request, "restore.html", active="settings", file=backup.describe(path), info=info, current=current)
+
+    @app.post("/settings/restore")
+    async def restore_now(request: Request):
+        data = await form(request)
+        try:
+            path = backup.find(cfg, str(data.get("file") or ""))
+            safety = backup.restore(cfg, path, _ACTOR.get())
+        except backup.RestoreError as exc:
+            return go("/settings#backups", str(exc), request)
+        app.state.db_health = quick_check(cfg.db_path)
+        when = backup.describe(path)
+        label = f"{schedule.fmt_day(when.taken.date())} {schedule.fmt_time(when.taken)}" if when else path.name
+        return go("/", f"Restored the backup from {label}. What was here before is saved as "
+                       f"\"{safety.name}\" in Settings, so you can switch back.", request)
+
+    @app.post("/settings/restore/upload")
+    async def restore_upload(request: Request):
+        upload = (await request.form()).get("file")
+        if upload is None or isinstance(upload, str) or not upload.filename:
+            return go("/settings#backups", "Pick a backup file first.", request)
+
+        def chunks():
+            while True:
+                part = upload.file.read(1024 * 1024)
+                if not part:
+                    return
+                yield part
+
+        try:
+            saved = await run_in_threadpool(backup.save_upload, cfg, chunks())
+        except backup.RestoreError as exc:
+            return go("/settings#backups", str(exc), request)
+        return go(f"/settings/restore?{urlencode({'file': saved.name})}", None)
 
     @app.post("/settings")
     async def save_settings(request: Request):
         data = await form(request)
         try:
-            store.parse_float(data.get("fever_f"), "Fever line", 97, 104)
-        except store.InvalidInput as exc:
+            values = _settings_values(data)
+        except (store.InvalidInput, units.BadTemperature) as exc:
             return go("/settings", str(exc), request)
         with db() as conn:
-            put_settings(conn, {k: str(v).strip() for k, v in data.items() if k != "onboarded"})
+            put_settings(conn, {k: v for k, v in values.items() if k != "onboarded"})
         return go(back(data.get("back"), "/settings"), "Settings saved.", request)
 
     @app.post("/settings/backup")
@@ -718,6 +1003,29 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         if not people:
             return go("/people")
         return render(request, "who.html", active="", people_list=people, nxt=back(next))
+
+    # ------------------------------------------------------------ change history
+
+    HISTORY_PAGE = 60
+
+    @app.get("/history", response_class=HTMLResponse)
+    def history_page(request: Request, page: int = 1):
+        page = max(page, 1)
+        with db() as conn:
+            events = history.events(conn, cfg.tz, limit=HISTORY_PAGE + 1, offset=(page - 1) * HISTORY_PAGE)
+        return render(request, "history.html", active="settings", events=events[:HISTORY_PAGE], page=page,
+                      more=len(events) > HISTORY_PAGE)
+
+    @app.post("/history/{event_id}/put-back")
+    async def history_put_back(request: Request, event_id: int):
+        data = await form(request)
+        try:
+            with db() as conn:
+                entity, new_id = history.put_back(conn, event_id)
+        except history.CannotPutBack as exc:
+            return go(back(data.get("back"), "/history"), str(exc), request)
+        target = f"/dose/{new_id}" if entity == "dose" else f"/symptoms/{new_id}"
+        return go(target, "Put back. It's in the record again.", request)
 
     @app.post("/who")
     async def who_pick(request: Request):
@@ -836,9 +1144,11 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                               custom=custom, shortcuts=medinfo.REGIMEN_SHORTCUTS, **rx)
             rx_keys = {m.info_key for i, m in _included_rx(data) if m.info_key}
             keys |= rx_keys
+            stopped_names = []
             for m in store.medications(conn, active=True):
                 if m["info_key"] and m["info_key"] not in keys:
                     store.set_active(conn, m["id"], False)
+                    stopped_names.append(m["name"])
             for key in keys - rx_keys:
                 store.add_from_catalog(conn, key)
             _import_rx(conn, data)
@@ -848,6 +1158,9 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             count = len(store.medications(conn, active=True))
         if not count:
             return go("/setup/medicines", "Tick at least one medicine, or add one that isn't listed.", request)
+        if stopped_names:
+            return go("/setup/label/0", f"Stopped {', '.join(stopped_names)} because {'it was' if len(stopped_names) == 1 else 'they were'} "
+                      "unticked. Their history is kept. Start them again from Medicines if that was a mistake.", request)
         return go("/setup/label/0")
 
     @app.get("/setup/label/{index}", response_class=HTMLResponse)
@@ -931,11 +1244,11 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     async def setup_team_save(request: Request):
         data = await form(request)
         try:
-            store.parse_float(data.get("fever_f"), "Fever line", 97, 104)
-        except store.InvalidInput as exc:
+            values = _settings_values(data)
+        except (store.InvalidInput, units.BadTemperature) as exc:
             return render(request, "setup_team.html", status_code=400, step=5, error=str(exc), last_label=0)
         with db() as conn:
-            put_settings(conn, {**{k: str(v).strip() for k, v in data.items()}, "onboarded": "1"})
+            put_settings(conn, {**values, "onboarded": "1"})
         return go("/", "All set. Today shows what's due. Tap a symptom any time you notice one.", request)
 
     @app.exception_handler(HTTPException)
@@ -949,6 +1262,19 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
 
 
 # ---------------------------------------------------------------- module helpers
+
+
+def _settings_values(data: dict) -> dict[str, str]:
+    """Form fields -> stored settings. The fever line is typed in the chosen unit and stored in °F."""
+    values = {k: str(v).strip() for k, v in data.items() if isinstance(v, str)}
+    unit = units.norm(values.get("temp_unit") or "F")
+    values["temp_unit"] = unit
+    if values.get("fever_line"):
+        values["fever_f"] = f"{units.parse_fever_line(values.pop('fever_line'), unit):g}"
+    elif values.get("fever_f"):
+        values["fever_f"] = f"{units.parse_fever_line(values['fever_f'], 'F'):g}"
+    values.pop("fever_line", None)
+    return values
 
 
 def _fever(prefs: dict[str, str]) -> float:
@@ -989,6 +1315,7 @@ def _rx_context(conn: sqlite3.Connection, text: str, today: date) -> dict:
         "rx_day1": schedule.day1_of(cycle) if cycle else None,
         "rx_groups": groups if len(groups) > 1 else [],
         "rx_example": RX_EXAMPLE,
+        "rx_existing": {m["info_key"] for m in store.medications(conn, active=True) if m["info_key"]},
     }
 
 
@@ -1019,13 +1346,14 @@ def _included_rx(data: dict) -> list[tuple[int, rxparse.ParsedMed]]:
 
 def _import_rx(conn: sqlite3.Connection, data: dict) -> list[int]:
     ids = []
-    for i, m in _included_rx(data):
-        rng = str(data.get(f"rx_cycles_{i}") or "all")
-        cycles = None
-        if re.fullmatch(r"\d+-\d+", rng):
-            a, b = (int(x) for x in rng.split("-"))
-            cycles = (a, b)
-        ids.append(store.import_parsed(conn, m, cycles))
+    with atomic(conn):  # every pasted medicine, or none if one of them can't be saved
+        for i, m in _included_rx(data):
+            rng = str(data.get(f"rx_cycles_{i}") or "all")
+            cycles = None
+            if re.fullmatch(r"\d+-\d+", rng):
+                a, b = (int(x) for x in rng.split("-"))
+                cycles = (a, b)
+            ids.append(store.import_parsed(conn, m, cycles))
     return ids
 
 
@@ -1144,6 +1472,7 @@ def _template_globals(templates: Jinja2Templates) -> None:
     env.globals.update(
         ring_points=ring_points,
         icon_paths=icons.paths,
+        show_temp=units.show,
         rx_how=rx_how,
         rx_days=rx_days,
         initials=profiles.initials,

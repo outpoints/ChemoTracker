@@ -6,9 +6,9 @@ import re
 import sqlite3
 from datetime import date, datetime, timedelta
 
-from . import medinfo
+from . import medinfo, units
 from . import symptoms as sx
-from .db import rowid, utcnow
+from .db import atomic, get_settings, rowid, utcnow
 
 ROUTES = tuple(medinfo.ROUTE_NAMES)
 KINDS = tuple(medinfo.KIND_NAMES)
@@ -86,7 +86,7 @@ def medication(conn: sqlite3.Connection, med_id: int) -> sqlite3.Row | None:
 
 
 MED_FIELDS = ("name", "brand", "info_key", "category", "route", "strength", "dose", "directions",
-              "min_hours_between", "max_per_day", "notes")
+              "min_hours_between", "max_per_day", "notes", "prep_minutes", "prep_note")
 
 
 def validate_med(values: dict) -> dict:
@@ -102,6 +102,15 @@ def validate_med(values: dict) -> dict:
         out["min_hours_between"] = parse_float(_s(out["min_hours_between"]), "Hours between doses", 0.25, 168)
     if "max_per_day" in out:
         out["max_per_day"] = parse_int(_s(out["max_per_day"]), "Most doses in a day", 1, 48)
+    if "prep_minutes" in out:
+        out["prep_minutes"] = parse_int(_s(out["prep_minutes"]), "Minutes before", 1, 1440)
+    if "prep_note" in out:
+        out["prep_note"] = clean(out["prep_note"])
+    if "prep_minutes" in out or "prep_note" in out:
+        if out.get("prep_minutes") and not out.get("prep_note"):
+            out["prep_note"] = "Get it ready"
+        if out.get("prep_note") and not out.get("prep_minutes"):
+            raise InvalidInput("Say how many minutes before the dose to get it ready, or clear what to do.")
     if "info_key" in out and out["info_key"] and medinfo.lookup(out["info_key"]) is None:
         out["info_key"] = None
     return out
@@ -156,6 +165,7 @@ def add_from_catalog(conn: sqlite3.Connection, key: str) -> int:
             "info_key": info.key,
             "category": info.category,
             "route": info.defaults.route,
+            **({"prep_minutes": str(info.prep[0]), "prep_note": info.prep[1]} if info.prep else {}),
         },
     )
     d = info.defaults
@@ -297,9 +307,10 @@ def create_cycle_series(conn: sqlite3.Connection, values: dict) -> list[int]:
     count = parse_int(_s(values.get("count")), "How many cycles", 1, 60) or 1
     first = date.fromisoformat(data["day1"])
     ids = []
-    for i in range(count):
-        ids.append(create_cycle(conn, {**data, "number": data["number"] + i,
-                                       "day1": (first + timedelta(days=i * data["length_days"])).isoformat()}))
+    with atomic(conn):  # all cycles or none, e.g. if cycle 3 already exists
+        for i in range(count):
+            ids.append(create_cycle(conn, {**data, "number": data["number"] + i,
+                                           "day1": (first + timedelta(days=i * data["length_days"])).isoformat()}))
     return ids
 
 
@@ -312,6 +323,17 @@ def update_cycle(conn: sqlite3.Connection, cycle_id: int, values: dict) -> None:
         )
     except sqlite3.IntegrityError:
         raise InvalidInput(f"There is already a cycle {data['number']}.") from None
+
+
+def shift_later_cycles(conn: sqlite3.Connection, number: int, days: int) -> int:
+    """Move every cycle after `number` by `days` (chemo delayed or brought forward)."""
+    if not days:
+        return 0
+    later = conn.execute("SELECT id, day1 FROM cycles WHERE number > ? ORDER BY number", (number,)).fetchall()
+    for row in later:
+        new_day1 = (date.fromisoformat(row["day1"]) + timedelta(days=days)).isoformat()
+        conn.execute("UPDATE cycles SET day1 = ? WHERE id = ?", (new_day1, row["id"]))
+    return len(later)
 
 
 def delete_cycle(conn: sqlite3.Connection, cycle_id: int) -> None:
@@ -347,6 +369,8 @@ def import_parsed(conn: sqlite3.Connection, med, cycles: tuple[int, int | None] 
         set_active(conn, med_id, True)
     values = {"strength": med.strength, "dose": med.dose, "directions": med.directions,
               "min_hours_between": med.min_hours_between, "max_per_day": med.max_per_day, "route": med.route}
+    if med.prep_minutes:
+        values["prep_minutes"], values["prep_note"] = str(med.prep_minutes), med.prep_note
     if med.brand:
         values["brand"] = med.brand
     update_medication(conn, med_id, values)
@@ -374,6 +398,16 @@ def dose_log(conn: sqlite3.Connection, log_id: int) -> sqlite3.Row | None:
                   m.strength AS med_strength, m.dose AS med_dose
              FROM dose_logs dl JOIN medications m ON m.id = dl.medication_id WHERE dl.id = ?""",
         (log_id,),
+    ).fetchone()
+
+
+def slot_log(conn: sqlite3.Connection, plan_id: int, slot: str) -> sqlite3.Row | None:
+    """The entry for one planned dose, with the name of whoever last touched it."""
+    return conn.execute(
+        """SELECT dl.*, p.name AS who FROM dose_logs dl
+             LEFT JOIN profiles p ON p.id = COALESCE(dl.updated_by, dl.logged_by)
+            WHERE dl.plan_id = ? AND dl.slot = ?""",
+        (plan_id, slot),
     ).fetchone()
 
 
@@ -483,7 +517,7 @@ def symptom_log(conn: sqlite3.Connection, entry_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM symptom_logs WHERE id = ?", (entry_id,)).fetchone()
 
 
-def validate_symptom(values: dict, fallback: datetime) -> dict:
+def validate_symptom(values: dict, fallback: datetime, unit: str = "F") -> dict:
     key = values.get("symptom") or ""
     if key not in sx.BY_KEY:
         raise InvalidInput("Pick a symptom.")
@@ -495,9 +529,12 @@ def validate_symptom(values: dict, fallback: datetime) -> dict:
         if severity is None:
             raise InvalidInput(f"Choose how bad the {sym.name.lower()} is.")
     elif sym.kind == "temp":
-        value = parse_float(_s(values.get("value")), "Temperature", 90, 110)
-        if value is None:
-            raise InvalidInput("Enter the temperature in °F, for example 99.1.")
+        try:
+            value, note = units.parse(_s(values.get("value")), unit)
+        except units.BadTemperature as exc:
+            raise InvalidInput(str(exc)) from None
+        if note and note not in (values.get("notes") or ""):
+            values = {**values, "notes": f"{note} {values.get('notes') or ''}".strip()}
     elif sym.kind == "pain":
         value = parse_float(_s(values.get("value")), "Pain", 0, 10)
         if value is None:
@@ -520,7 +557,7 @@ def validate_symptom(values: dict, fallback: datetime) -> dict:
 
 
 def add_symptom(conn: sqlite3.Connection, values: dict, fallback: datetime, by: int | None = None) -> int:
-    data = validate_symptom(values, fallback)
+    data = validate_symptom(values, fallback, get_settings(conn).get("temp_unit", "F"))
     now = utcnow()
     cur = conn.execute(
         """INSERT INTO symptom_logs (logged_at, symptom, label, severity, value, notes, logged_by, created_at, updated_at)
@@ -532,7 +569,7 @@ def add_symptom(conn: sqlite3.Connection, values: dict, fallback: datetime, by: 
 
 def update_symptom(conn: sqlite3.Connection, entry_id: int, values: dict, fallback: datetime,
                    by: int | None = None) -> None:
-    data = validate_symptom(values, fallback)
+    data = validate_symptom(values, fallback, get_settings(conn).get("temp_unit", "F"))
     conn.execute(
         """UPDATE symptom_logs SET logged_at = ?, symptom = ?, label = ?, severity = ?, value = ?, notes = ?,
                   updated_at = ?, updated_by = COALESCE(?, updated_by) WHERE id = ?""",

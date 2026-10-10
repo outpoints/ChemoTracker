@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ med.name }} · ChemoTracker{% endblock %}
 {% block content %}
+{% from "_history.html" import history_card with context %}
 {% from "_ui.html" import icon, med_info, by_tag %}
 <div class="page">
   <a class="btn btn-quiet" href="/medicines" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Medicines</a>
@@ -12,12 +13,43 @@
     </div>
   </div>
 
+  {% set at_clinic = plans and plans | rejectattr("kind", "equalto", "clinic") | list | length == 0 %}
+  {% set needs_label = not at_clinic and not med.strength and not med.directions %}
   <div class="two-col">
     <div class="stack-lg">
-      <details class="card more rx-fill" style="padding: 0 var(--s5)" {% if is_new and not med.directions %}open{% endif %}>
+      <section class="card card-pad med-summary" id="summary" aria-labelledby="sum-h">
+        <h2 id="sum-h">{{ "What the clinic gives" if at_clinic else "What you take" }}</h2>
+        {% if needs_label %}
+        <div class="callout callout-warn" style="margin-top: var(--s3)">{{ icon("pill-bottle") }}
+          <div class="grow"><strong>Add what's on the bottle</strong><p class="meta">Copy the strength and directions from the pharmacy label so everyone takes it the same way.</p></div></div>
+        {% endif %}
+        <dl class="rx-facts" style="margin-top: var(--s3)">
+          {% if med.strength %}<dt>Strength</dt><dd>{{ med.strength }}</dd>{% endif %}
+          {% if med.dose %}<dt>Dose</dt><dd>{{ med.dose }}</dd>{% endif %}
+          {% if med.min_hours_between %}<dt>Spacing</dt><dd>At least {{ med.min_hours_between | string | replace(".0", "") }} hours apart{% if med.max_per_day %}, up to {{ med.max_per_day }} a day{% endif %}</dd>
+          {% elif med.max_per_day %}<dt>Limit</dt><dd>Up to {{ med.max_per_day }} a day</dd>{% endif %}
+          {% if med.prep_minutes %}<dt>Get it ready</dt><dd>{{ med.prep_note or "Get it ready" }}, {{ med.prep_minutes }} minutes before each dose</dd>{% endif %}
+          <dt>When</dt>
+          <dd>
+            {% for p in plans %}
+            <div class="when-line">{{ kind_names[p.kind] }} · {{ days_text(p.start_day, p.end_day) }}{% if p.times %} · {{ plan_times(p) | map("fmt_time") | join(", ") }}{% endif %}{% if p.dose %} · {{ p.dose }}{% endif %}{% if p.label %} <span class="meta">({{ p.label }})</span>{% endif %}{% if p.from_cycle != 1 or p.to_cycle %} <span class="meta">· cycles {{ p.from_cycle }}–{{ p.to_cycle or "on" }}</span>{% endif %}</div>
+            {% else %}<span class="pill pill-late">No schedule yet</span>{% endfor %}
+          </dd>
+        </dl>
+        {% if med.directions %}<p class="rx-sig" style="margin-top: var(--s3)">Label: {{ med.directions }}</p>{% endif %}
+        {% if med.notes %}<p class="meta" style="margin-top: var(--s2)">{{ med.notes }}</p>{% endif %}
+        {% if med.active and not at_clinic %}
+        <a class="btn btn-soft" style="margin-top: var(--s4)" href="/dose/new?med={{ med.id }}">{{ icon("plus") }}Log a dose</a>
+        {% endif %}
+      </section>
+
+      <details class="edit-zone" id="edit" {% if is_new or edit or needs_label or not plans %}open{% endif %}>
+        <summary class="btn btn-secondary btn-block">{{ icon("pencil") }}Change details or schedule</summary>
+        <div class="stack-lg" style="margin-top: var(--s4)">
+      <details class="card more rx-fill" style="padding: 0 var(--s5)" {% if (is_new or needs_label) and not med.directions %}open{% endif %}>
         <summary>{{ icon("clipboard-paste") }}&nbsp;Fill this in from the label</summary>
         <form class="form" method="post" action="/medicines/{{ med.id }}/import" style="padding-bottom: var(--s5)">
-          <p class="meta">Type or paste what's printed on the bottle. It replaces the label details and schedule below. Check them after.</p>
+          <p class="meta">Type or paste what's printed on the bottle. It replaces the details and schedule. Check them after.</p>
           <textarea name="rx_text" rows="3" placeholder="{{ med.name }} - Take 1 tablet by mouth every 8 hours as needed for nausea" required></textarea>
           <button class="btn btn-secondary" type="submit">{{ icon("sparkles") }}Fill it in</button>
         </form>
@@ -47,6 +79,16 @@
             <input id="max" name="max_per_day" type="number" inputmode="numeric" min="1" max="48" value="{{ med.max_per_day or '' }}">
           </div>
         </div>
+        <fieldset class="field">
+          <legend>Get it ready ahead <span class="meta">(optional)</span></legend>
+          <div class="field-row">
+            <div class="field"><label class="meta" for="prep_note">What to do</label>
+              <input id="prep_note" name="prep_note" type="text" value="{{ med.prep_note or '' }}" placeholder="For example: Take it out of the fridge"></div>
+            <div class="field"><label class="meta" for="prep_minutes">Minutes before each dose</label>
+              <input id="prep_minutes" name="prep_minutes" type="number" inputmode="numeric" min="1" max="1440" value="{{ med.prep_minutes or '' }}" placeholder="For example: 30"></div>
+          </div>
+          <p class="hint">Today shows it, and reminders send it at that time. Shots kept in the fridge usually need 30 minutes to warm up.</p>
+        </fieldset>
         <div class="field">
           <label for="route">How it goes in</label>
           <select id="route" name="route">{% for k, v in route_names.items() %}<option value="{{ k }}" {% if med.route == k %}selected{% endif %}>{{ v }}</option>{% endfor %}</select>
@@ -60,7 +102,7 @@
         <div class="stack">
           {% for p in plans %}
           <form class="card card-pad form" method="post" action="/plans/{{ p.id }}">
-            <input type="hidden" name="back" value="/medicines/{{ med.id }}#plans">
+            <input type="hidden" name="back" value="/medicines/{{ med.id }}">
             <div class="spread"><h3>{{ kind_names[p.kind] }} · {{ days_text(p.start_day, p.end_day) }}</h3>{% if plans | length > 1 %}<span class="badge">Schedule {{ loop.index }}</span>{% endif %}</div>
             {% with plan=p, show_cycles=True %}{% include "_plan_form.html" %}{% endwith %}
             <div class="row">
@@ -80,8 +122,11 @@
         </div>
       </section>
 
+        </div>
+      </details>
+
       <section>
-        <div class="section-title"><h2>Recent doses</h2>{% if med.active %}<a class="btn btn-soft btn-sm" href="/dose/new?med={{ med.id }}">{{ icon("plus") }}Log a dose</a>{% endif %}</div>
+        <div class="section-title"><h2>Recent doses</h2></div>
         <div class="card">
           {% if recent %}
           <ul class="timeline">
@@ -116,6 +161,8 @@
       <div class="card card-pad"><h2>About this medicine</h2><p class="meta" style="margin-top: var(--s2)">This one isn't in the built-in list, so there's no summary. Ask the pharmacist for the printed information sheet.</p></div>
       {% endif %}
 
+      {% if events %}{{ history_card(events, "Label and schedule changes") }}{% endif %}
+
       <div class="card card-pad danger-zone stack-sm">
         {% if med.active %}
         <form method="post" action="/medicines/{{ med.id }}/active"><input type="hidden" name="active" value="0">
@@ -125,7 +172,7 @@
         <form method="post" action="/medicines/{{ med.id }}/active"><input type="hidden" name="active" value="1">
           <button class="btn btn-primary btn-block" type="submit">Start again</button></form>
         {% endif %}
-        <form method="post" action="/medicines/{{ med.id }}/delete" data-confirm="Delete {{ med.name }} and every dose logged for it? This can't be undone.">
+        <form method="post" action="/medicines/{{ med.id }}/delete" data-confirm="Delete {{ med.name }} and every dose logged for it? They stay in the change history, but can't be put back.">
           <button class="btn btn-danger btn-block" type="submit">{{ icon("trash") }}Delete medicine and history</button>
         </form>
       </div>

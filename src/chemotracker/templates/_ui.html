@@ -98,10 +98,10 @@
 {%- endif -%}
 {%- endmacro %}
 
-{% macro symptom_tag(row, fever, people) -%}
+{% macro symptom_tag(row, fever, people, unit="F") -%}
 {%- set sym = lookup_symptom(row.symptom) -%}
 {%- set who = people.get(row.logged_by) if row.logged_by else none -%}
-<a class="sev-tag s{{ score(row, fever) }}" href="/symptoms/{{ row.id }}">{{ row.label if row.symptom == "other" else sym.name }} · {{ sym.describe(row.severity, row.value) }} <span class="meta">{{ fmt_time(row.logged_at) }}{% if who %} · {{ who.name }}{% endif %}</span></a>
+<a class="sev-tag s{{ score(row, fever) }}" href="/symptoms/{{ row.id }}">{{ row.label if row.symptom == "other" else sym.name }} · {{ sym.describe(row.severity, row.value, unit) }} <span class="meta">{{ fmt_time(row.logged_at) }}{% if who %} · {{ who.name }}{% endif %}</span></a>
 {%- endmacro %}
 
 {% macro med_info(info, compact=False) -%}

@@ -1,0 +1,35 @@
+name: Something was confusing or didn't work
+description: A screen, word, or step that made you stop and wonder what to do. No technical knowledge needed.
+labels: [usability]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Reports like this make the app easier for every family.
+
+        **Please don't include real names, phone numbers, dates of birth, or photos of labels or paperwork.** Issues are public. Use placeholders like John, Jane, or 555-0100.
+  - type: textarea
+    id: what
+    attributes:
+      label: What were you trying to do?
+      placeholder: For example, log a nausea pill for my mom after lunch.
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened instead, or what was confusing?
+    validations:
+      required: true
+  - type: dropdown
+    id: device
+    attributes:
+      label: What were you using?
+      options: [iPhone, Android phone, iPad or tablet, Computer, Not sure]
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I removed real names, numbers, dates, and photos.
+          required: true

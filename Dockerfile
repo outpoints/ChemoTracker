@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1.7
-# Reproducible build: base images pinned by digest, dependencies pinned by uv.lock.
+# Reproducible build: base images pinned by digest, every Python package pinned by version and
+# checksum in uv.lock (`--frozen` refuses to run if the lock and pyproject.toml disagree).
+# The app itself is copied as plain source, so no build tool is downloaded at build time.
 
 # Bump these together with `docker buildx imagetools inspect <image>` to get the new digest.
 ARG PYTHON_IMAGE=python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
@@ -19,8 +21,6 @@ COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 COPY src ./src
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
 
 FROM ${PYTHON_IMAGE} AS runtime
 LABEL org.opencontainers.image.title="ChemoTracker" \
@@ -33,7 +33,9 @@ RUN groupadd --system --gid ${APP_UID} app \
  && mkdir -p /data /backups \
  && chown app:app /data /backups
 COPY --from=build --chown=app:app /app/.venv /app/.venv
+COPY --from=build --chown=root:root /app/src /app/src
 ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONPATH=/app/src \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     CHEMO_DATA_DIR=/data \
@@ -47,4 +49,4 @@ VOLUME ["/data", "/backups"]
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('CHEMO_PORT', '8000')}/healthz\", timeout=4)"]
-CMD ["chemotracker"]
+CMD ["python", "-m", "chemotracker"]

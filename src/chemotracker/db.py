@@ -7,11 +7,14 @@ the care team reads. Audit columns (created_at/updated_at) are UTC ISO-8601.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterator
+
+log = logging.getLogger("chemotracker.db")
 
 MIGRATIONS: list[str] = [
     # v1
@@ -132,7 +135,102 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE plans ADD COLUMN dose TEXT;
     """,
+    # v4: change history (every create, change and delete, with who and the before/after values),
+    # and the reminders already sent so a restart never repeats one.
+    """
+    CREATE TABLE history (
+        id     INTEGER PRIMARY KEY,
+        at     TEXT NOT NULL,
+        actor  INTEGER,
+        entity TEXT NOT NULL,
+        ref    TEXT,
+        action TEXT NOT NULL CHECK (action IN ('created', 'changed', 'deleted', 'restored')),
+        before TEXT,
+        after  TEXT
+    );
+    CREATE INDEX history_entity ON history(entity, ref, id);
+    CREATE INDEX history_at ON history(at);
+
+    CREATE TABLE reminders_sent (
+        key     TEXT PRIMARY KEY,
+        sent_at TEXT NOT NULL
+    );
+
+    -- A step before each dose, e.g. "Take it out of the fridge" 30 minutes before a shot.
+    ALTER TABLE medications ADD COLUMN prep_minutes INTEGER CHECK (prep_minutes IS NULL OR prep_minutes BETWEEN 1 AND 1440);
+    ALTER TABLE medications ADD COLUMN prep_note TEXT;
+    -- White-cell booster syringes: the FDA labels say to let them warm up for 30 minutes.
+    UPDATE medications SET prep_minutes = 30, prep_note = 'Take it out of the fridge'
+     WHERE info_key IN ('filgrastim', 'pegfilgrastim') AND route = 'injection' AND prep_minutes IS NULL;
+    """,
 ]
+
+# ---------------------------------------------------------------- change history
+#
+# Every write connection gets TEMP triggers that copy each insert, update and delete on
+# these tables into `history`, with the person using the device. Triggers catch
+# everything, including cascades (removing a medicine removes its doses), so no code
+# path can change the record without leaving a trace. They are TEMP so the database
+# file stays plain SQLite that any tool can open.
+
+AUDITED: dict[str, tuple[str, str]] = {
+    # table: (entity name, key column)
+    "dose_logs": ("dose", "id"),
+    "symptom_logs": ("symptom", "id"),
+    "medications": ("medication", "id"),
+    "plans": ("plan", "id"),
+    "cycles": ("cycle", "id"),
+    "profiles": ("person", "id"),
+    "settings": ("setting", "key"),
+}
+# Bookkeeping columns: kept in the snapshot, but a change to only these isn't a change.
+NOT_CONTENT = {"created_at", "updated_at", "updated_by", "logged_by"}
+# Never copied into history.
+SECRET_SETTINGS = ("ntfy_token",)
+
+
+def _json(conn: sqlite3.Connection, table: str, side: str, content_only: bool = False) -> str:
+    cols = [r["name"] for r in conn.execute(f"PRAGMA main.table_info({table})")]
+    parts = []
+    for c in cols:
+        if content_only and c in NOT_CONTENT:
+            continue
+        value = f"{side}.{c}"
+        if table == "settings" and c == "value":
+            secret = ", ".join(f"'{k}'" for k in SECRET_SETTINGS)
+            value = f"CASE WHEN {side}.key IN ({secret}) THEN '(hidden)' ELSE {side}.value END"
+        parts.append(f"'{c}', {value}")
+    return f"json_object({', '.join(parts)})"
+
+
+def _install_audit(conn: sqlite3.Connection, actor: int | None) -> None:
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS audit_ctx (actor INTEGER)")
+    conn.execute("DELETE FROM temp.audit_ctx")
+    conn.execute("INSERT INTO temp.audit_ctx (actor) VALUES (?)", (actor,))
+    stamp = "strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now')"
+    who = "(SELECT actor FROM audit_ctx LIMIT 1)"
+    for table, (entity, key) in AUDITED.items():
+        new, old = _json(conn, table, "NEW"), _json(conn, table, "OLD")
+        new_c, old_c = _json(conn, table, "NEW", True), _json(conn, table, "OLD", True)
+        conn.execute(f"""CREATE TEMP TRIGGER IF NOT EXISTS audit_{table}_ins AFTER INSERT ON main.{table} BEGIN
+            INSERT INTO history (at, actor, entity, ref, action, after)
+            VALUES ({stamp}, {who}, '{entity}', NEW.{key}, 'created', {new}); END""")
+        conn.execute(f"""CREATE TEMP TRIGGER IF NOT EXISTS audit_{table}_upd AFTER UPDATE ON main.{table}
+            WHEN {old_c} IS NOT {new_c} BEGIN
+            INSERT INTO history (at, actor, entity, ref, action, before, after)
+            VALUES ({stamp}, {who}, '{entity}', NEW.{key}, 'changed', {old}, {new}); END""")
+        conn.execute(f"""CREATE TEMP TRIGGER IF NOT EXISTS audit_{table}_del AFTER DELETE ON main.{table} BEGIN
+            INSERT INTO history (at, actor, entity, ref, action, before)
+            VALUES ({stamp}, {who}, '{entity}', OLD.{key}, 'deleted', {old}); END""")
+
+
+def record_event(conn: sqlite3.Connection, entity: str, ref: str | None, action: str, actor: int | None,
+                 before: str | None = None, after: str | None = None) -> None:
+    """A history line for something triggers can't see (a whole database restored from a backup)."""
+    conn.execute(
+        "INSERT INTO history (at, actor, entity, ref, action, before, after) VALUES (?,?,?,?,?,?,?)",
+        (utcnow(), actor, entity, ref, action, before, after),
+    )
 
 
 def utcnow() -> str:
@@ -140,11 +238,47 @@ def utcnow() -> str:
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, timeout=10)
+    # isolation_level=None: transactions are started and ended explicitly (see `session`),
+    # so a read-then-write can't be split by another writer.
+    conn = sqlite3.connect(path, timeout=10, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA busy_timeout = 10000")
+    # WAL + FULL: a power cut can't lose a dose someone was told was saved.
+    conn.execute("PRAGMA synchronous = FULL")
     return conn
+
+
+class DataDirInUse(RuntimeError):
+    pass
+
+
+def lock_data_dir(data_dir: Path):
+    """Refuse to run two servers on one database (two containers, or `docker compose` plus a dev server).
+
+    Returns the open lock file; keep a reference for as long as the app runs.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows: no advisory locks, single instance is on you
+        return None
+    handle = open(data_dir / ".chemotracker.lock", "a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise DataDirInUse(
+            f"Another ChemoTracker is already using {data_dir}. Stop it first: two servers on one database can lose entries."
+        ) from None
+    return handle
+
+
+def schema_version(path: Path | str) -> int:
+    conn = connect(path)
+    try:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        conn.close()
 
 
 def migrate(path: Path | str) -> int:
@@ -153,23 +287,60 @@ def migrate(path: Path | str) -> int:
         conn.execute("PRAGMA journal_mode = WAL")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         for index, script in enumerate(MIGRATIONS[version:], start=version + 1):
-            conn.executescript(f"BEGIN;\n{script}\nPRAGMA user_version = {index};\nCOMMIT;")
+            conn.executescript(f"BEGIN IMMEDIATE;\n{script}\nPRAGMA user_version = {index};\nCOMMIT;")
         return conn.execute("PRAGMA user_version").fetchone()[0]
     finally:
         conn.close()
 
 
-@contextmanager
-def session(path: Path | str) -> Iterator[sqlite3.Connection]:
+def quick_check(path: Path | str) -> str:
+    """'ok', or SQLite's description of the first problem it finds."""
     conn = connect(path)
     try:
+        problems = [r[0] for r in conn.execute("PRAGMA quick_check(5)")]
+        if problems == ["ok"]:
+            bad_links = conn.execute("PRAGMA foreign_key_check").fetchall()
+            return f"{len(bad_links)} entries point at rows that no longer exist" if bad_links else "ok"
+        return "; ".join(problems)
+    finally:
+        conn.close()
+
+
+@contextmanager
+def session(path: Path | str, write: bool = False, actor: int | None = None) -> Iterator[sqlite3.Connection]:
+    """One transaction per request.
+
+    Reads get a consistent snapshot (BEGIN). Writes take the write lock up front
+    (BEGIN IMMEDIATE), so "check, then save" can't interleave with another person's
+    save, and a busy database waits instead of failing.
+    """
+    conn = connect(path)
+    try:
+        if write and conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'history'").fetchone():
+            _install_audit(conn, actor)
+        conn.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
+        if conn.in_transaction:
+            conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
         raise
     finally:
         conn.close()
+
+
+@contextmanager
+def atomic(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """All-or-nothing for a group of writes inside a session (e.g. a series of cycles)."""
+    conn.execute("SAVEPOINT grp")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK TO grp")
+        conn.execute("RELEASE grp")
+        raise
+    conn.execute("RELEASE grp")
 
 
 def rowid(cur: sqlite3.Cursor) -> int:
@@ -186,12 +357,23 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "clinic_phone": "",
     "after_hours_phone": "",
     "fever_f": "100.4",
+    "temp_unit": "F",
     "call_if": (
         "Temperature at or above your fever line, or shaking chills\n"
         "Can't keep liquids or medicines down\n"
         "Anything listed under \"Call your care team\" on a medicine's page"
     ),
     "onboarded": "",
+    # Reminders through ntfy (see reminders.py).
+    "ntfy_enabled": "",
+    "ntfy_server": "https://ntfy.sh",
+    "ntfy_topic": "",
+    "ntfy_token": "",
+    "ntfy_lead": "0",
+    "ntfy_nag": "30",
+    "ntfy_chemo": "1",
+    "ntfy_names": "1",
+    "app_url": "",
 }
 
 

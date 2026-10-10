@@ -13,17 +13,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to a commit, not a tag, so a moved tag can't change what runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
       - name: Personal information check (generic rules; the private list never leaves the owner's machine)
         run: |
           python3 scripts/check_pii.py --all
           python3 scripts/check_pii.py --history
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
         with:
           version: "0.10.2"
       - name: Tests
         run: |
           uv sync --frozen
           uv run pytest -q
+      - name: Known vulnerabilities in the locked packages
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt -o /tmp/requirements.txt
+          uvx --from "pip-audit==2.10.1" pip-audit -r /tmp/requirements.txt --require-hashes --disable-pip

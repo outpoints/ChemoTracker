@@ -22,6 +22,14 @@
       <label for="gap">Hours between doses <span class="meta">(for as-needed medicines)</span></label>
       <input id="gap" name="min_hours_between" type="number" inputmode="decimal" min="0.25" max="168" step="0.25" value="{{ (v.min_hours_between | string | replace('.0', '')) if v.min_hours_between else '' }}" placeholder="&quot;Every 6 hours&quot; means 6" style="max-width: 16ch">
     </div>
+    {% if med.route == "injection" or med.prep_minutes %}
+    <div class="field-row">
+      <div class="field"><label for="prep_note">Get it ready ahead</label>
+        <input id="prep_note" name="prep_note" type="text" value="{{ v.prep_note or med.prep_note or '' }}" placeholder="For example: Take it out of the fridge"></div>
+      <div class="field"><label for="prep_minutes">Minutes before</label>
+        <input id="prep_minutes" name="prep_minutes" type="number" inputmode="numeric" min="1" max="1440" value="{{ v.prep_minutes or med.prep_minutes or '' }}" placeholder="30" style="max-width: 12ch"></div>
+    </div>
+    {% endif %}
     <input type="hidden" name="route" value="{{ med.route }}">
   </div>
 

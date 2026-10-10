@@ -12,21 +12,25 @@
   </div>
   {% set active_meds = meds | selectattr("active") | list %}
   {% set stopped = meds | rejectattr("active") | list %}
+  {% set home = [] %}{% set clinic = [] %}
+  {% for m in active_meds %}{% if plans[m.id] and plans[m.id] | rejectattr("kind", "equalto", "clinic") | list | length == 0 %}{% set _ = clinic.append(m) %}{% else %}{% set _ = home.append(m) %}{% endif %}{% endfor %}
   {% if active_meds %}
+  {% for title, group, sub in [("At home", home, "Pills, shots and creams you take or give yourself"), ("Given at the clinic", clinic, "Chemo and IV medicines the infusion team gives you")] if group %}
+  <div class="section-title" {% if loop.first %}style="margin-top: 0"{% endif %}><h2>{{ title }}</h2><span class="meta">{{ sub }}</span></div>
   <div class="card">
     <ul class="list">
-      {% for m in active_meds %}
+      {% for m in group %}
       {% set ps = plans[m.id] %}
       <li>
         <a class="list-item" href="/medicines/{{ m.id }}">
-          <span style="color: var(--teal)">{{ route_icon(m.route) }}</span>
+          <span class="chip-ico">{{ route_icon(m.route) }}</span>
           <span class="grow">
             <span class="title">{{ m.name }}</span>{% if m.brand %} <span class="meta">({{ m.brand }})</span>{% endif %}
             {% if m.strength or m.dose %}<br><span class="meta">{{ [m.strength, m.dose] | select | join(" · ") }}</span>{% endif %}
             <br><span class="meta">
               {%- for p in ps %}{{ kind_names[p.kind] }}, {{ days_text(p.start_day, p.end_day) | lower }}{% if p.times %} at {{ plan_times(p) | map("fmt_time") | join(", ") }}{% endif %}{% if not loop.last %}; {% endif %}{% else %}No schedule yet{% endfor -%}
             </span>
-            {% if not m.strength and not m.directions %}<br><span class="pill pill-late" style="margin-top: var(--s1)">Label not copied yet</span>{% endif %}
+            {% if group is sameas home and not m.strength and not m.directions %}<br><span class="pill pill-late" style="margin-top: var(--s1)">Add the label details</span>{% endif %}
           </span>
           {{ icon("chevron-right", "chev") }}
         </a>
@@ -34,6 +38,7 @@
       {% endfor %}
     </ul>
   </div>
+  {% endfor %}
   {% else %}
   <div class="card empty"><h2>No medicines yet</h2><p>Add the medicines on your pharmacy labels.</p><a class="btn btn-primary" href="/medicines/add">Add a medicine</a></div>
   {% endif %}

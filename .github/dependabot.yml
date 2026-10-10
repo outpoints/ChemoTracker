@@ -1,0 +1,19 @@
+# Weekly pull requests when a pinned package, base image or CI action has an update.
+# Nothing updates by itself: each one is a pull request that runs the tests first.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

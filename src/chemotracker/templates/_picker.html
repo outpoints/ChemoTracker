@@ -2,11 +2,11 @@
 <div class="picker-search">
   <input type="search" placeholder="Search, for example Zofran or ondansetron" data-filter aria-label="Search medicines" autocomplete="off">
 </div>
-<div class="shortcuts" style="margin-top: var(--s2)">
+<div class="shortcuts" style="margin-top: var(--s2)" data-js-only hidden>
   <span class="meta">Chemo shortcut:</span>
-  {% for name, keys in shortcuts %}<button type="button" class="btn btn-soft btn-sm" data-keys="{{ keys | join(',') }}">{{ name }}</button>{% endfor %}
+  {% for name, keys in shortcuts %}<button type="button" class="btn btn-sm shortcut" data-shortcut="{{ keys | join(',') }}" aria-pressed="false">{{ name }}</button>{% endfor %}
 </div>
-<p class="hint" style="margin-top: var(--s2)">Shortcuts only tick the chemo medicines in that plan. Pick the other medicines from your own prescriptions.</p>
+<p class="hint" style="margin-top: var(--s2)" data-js-only hidden>A shortcut ticks the chemo medicines in that plan. Tap it again to untick them. Add the other medicines from your own prescriptions.</p>
 
 {% for key, name, blurb, meds in catalog %}
 <section class="card picker-group" data-group>

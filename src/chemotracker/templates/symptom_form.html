@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ sym.name }} · ChemoTracker{% endblock %}
 {% block content %}
+{% from "_history.html" import history_card with context %}
 {% from "_ui.html" import icon %}
 {% set v = values or {} %}
 {% set val = v.get("value") %}{% set sev = v.get("severity") %}{% set notes = v.get("notes") or "" %}
@@ -16,6 +17,7 @@
   <form class="form" method="post" action="{{ '/symptoms/' ~ entry.id if entry else '/symptoms/new' }}">
     {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
     <input type="hidden" name="symptom" value="{{ sym.key }}">
+    {% if entry %}<input type="hidden" name="seen" value="{{ entry.updated_at }}">{% endif %}
 
     {% if sym.key == "other" %}
     <div class="field">
@@ -37,9 +39,9 @@
     </fieldset>
     {% elif sym.kind == "temp" %}
     <div class="field">
-      <label for="value">Temperature (°F)</label>
-      <input class="big-number" id="value" name="value" type="number" inputmode="decimal" step="0.1" min="90" max="110" value="{{ val if val is not none else '' }}" placeholder="98.6" required autofocus>
-      <p class="hint">Your care team's fever line is {{ fever_f }} °F.</p>
+      <label for="value">Temperature ({{ "°C" if temp_unit == "C" else "°F" }})</label>
+      <input class="big-number" id="value" name="value" type="text" inputmode="decimal" value="{{ show_temp(val, temp_unit, symbol=False) if val not in (none, '') and val is number else (val if val is not none else '') }}" placeholder="{{ '37.0' if temp_unit == 'C' else '98.6' }}" required autofocus autocomplete="off">
+      <p class="hint">Your care team's fever line is {{ fever_show }}. A reading in {{ "°F" if temp_unit == "C" else "°C" }} is converted for you.</p>
     </div>
     {% elif sym.kind == "pain" %}
     <fieldset>
@@ -84,6 +86,7 @@
     <button class="btn btn-primary btn-lg btn-block" type="submit">{{ icon("check") }}Save</button>
   </form>
 
+  {% if entry and events %}<div style="margin-top: var(--s4)">{{ history_card(events) }}</div>{% endif %}
   {% if entry %}
   <form method="post" action="/symptoms/{{ entry.id }}/delete" data-confirm="Delete this entry?" style="margin-top: var(--s4)">
     <input type="hidden" name="back" value="/symptoms?d={{ entry.logged_at[:10] }}">

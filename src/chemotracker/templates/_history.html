@@ -1,0 +1,37 @@
+{% from "_ui.html" import icon %}
+{# One change-history list. `show_subject` names the item (on the all-changes page). #}
+{% macro history_list(events, show_subject=False, back="/history") -%}
+<ol class="history">
+  {% for e in events %}
+  <li class="history-item is-{{ e.action }}">
+    <div class="history-head">
+      <span class="history-dot" aria-hidden="true"></span>
+      <span class="grow"><strong>{{ e.who }}</strong> {{ e.verb }}{% if show_subject %} <span class="history-subject">{{ e.subject }}</span>{% if e.entity in ("dose", "symptom") %} <span class="meta">({{ "dose" if e.entity == "dose" else "symptom entry" }})</span>{% endif %}{% elif e.action == "created" %} this{% elif e.action == "deleted" %} this{% endif %}</span>
+      <time class="meta" datetime="{{ e.at.isoformat() }}">{{ fmt_rel(e.at.date(), today) }} {{ fmt_time(e.at) }}</time>
+    </div>
+    {% if e.changes %}
+    <ul class="history-changes">
+      {% for label, before, after in e.changes %}
+      <li><span class="meta">{{ label }}:</span> {% if before %}<s>{{ before }}</s> {{ icon("arrow-right", "history-arrow") }} {% endif %}<span>{{ after }}</span></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if e.can_put_back %}
+    <form method="post" action="/history/{{ e.id }}/put-back" style="margin-top: var(--s2)">
+      <input type="hidden" name="back" value="{{ back }}">
+      <button class="btn btn-secondary btn-sm" type="submit">{{ icon("undo") }}Put it back</button>
+    </form>
+    {% endif %}
+  </li>
+  {% else %}
+  <li class="meta">No changes recorded yet.</li>
+  {% endfor %}
+</ol>
+{%- endmacro %}
+
+{% macro history_card(events, title="Change history") -%}
+<details class="card more history-card" style="padding: 0 var(--s5)">
+  <summary>{{ icon("history") }}{{ title }} <span class="meta">&nbsp;· {{ events | length }} {{ "change" if events | length == 1 else "changes" }}</span></summary>
+  <div style="padding-bottom: var(--s4)">{{ history_list(events) }}</div>
+</details>
+{%- endmacro %}

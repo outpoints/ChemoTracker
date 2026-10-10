@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Medical question or emergency
+    url: https://www.cancer.gov/contact
+    about: ChemoTracker can't give medical advice. Call your care team, or your local emergency number in an emergency.

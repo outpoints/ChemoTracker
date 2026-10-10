@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from . import symptoms as sx
 
@@ -43,6 +44,40 @@ def period_for(hhmm: str | None, label: str | None = None) -> str:
         if t >= start:
             current = key
     return current
+
+
+# ---------------------------------------------------------------- real elapsed time
+#
+# Times are stored as local wall-clock strings. When the clocks change, wall-clock
+# arithmetic is off by an hour: on the spring-forward night "6 hours after 11 PM" is
+# 6 AM, not 5 AM. Gaps between doses use real elapsed time so the app never says
+# a medicine is OK an hour early.
+
+_TZ: ZoneInfo | None = None
+
+
+def set_timezone(tz: ZoneInfo | None) -> None:
+    global _TZ
+    _TZ = tz
+
+
+def _utc(local: datetime) -> datetime:
+    assert _TZ is not None
+    return local.replace(tzinfo=_TZ).astimezone(UTC)
+
+
+def real_add(local: datetime, delta: timedelta) -> datetime:
+    """Wall-clock time `delta` of real time after `local`."""
+    if _TZ is None:
+        return local + delta
+    return (_utc(local) + delta).astimezone(_TZ).replace(tzinfo=None)
+
+
+def real_diff(later: datetime, earlier: datetime) -> timedelta:
+    """Real time between two wall-clock times."""
+    if _TZ is None:
+        return later - earlier
+    return _utc(later) - _utc(earlier)
 
 
 # ---------------------------------------------------------------- formatting
@@ -151,7 +186,8 @@ def next_cycle_after(conn: sqlite3.Connection, d: date) -> sqlite3.Row | None:
 PLAN_SQL = """
 SELECT p.*, m.name AS med_name, m.brand AS med_brand, m.info_key AS med_info, m.route AS med_route,
        m.strength AS med_strength, m.dose AS med_dose, m.directions AS med_directions,
-       m.min_hours_between AS med_gap, m.max_per_day AS med_max
+       m.min_hours_between AS med_gap, m.max_per_day AS med_max,
+       m.prep_minutes AS med_prep, m.prep_note AS med_prep_note
   FROM plans p JOIN medications m ON m.id = p.medication_id
  WHERE m.active = 1 AND p.from_cycle <= :n AND (p.to_cycle IS NULL OR p.to_cycle >= :n)
  ORDER BY CASE p.kind WHEN 'clinic' THEN 0 WHEN 'scheduled' THEN 1 ELSE 2 END, m.name, p.id
@@ -206,6 +242,24 @@ class Slot:
     @property
     def dose(self) -> str:
         return self.plan["dose"] or self.plan["med_dose"] or ""
+
+    @property
+    def prep_at(self) -> datetime | None:
+        """When to start getting this dose ready (e.g. out of the fridge), for home doses at a set time."""
+        if self.kind != "scheduled" or not self.time or not self.plan["med_prep"]:
+            return None
+        return real_add(self.dt, -timedelta(minutes=self.plan["med_prep"]))
+
+    def prep_text(self, now: datetime) -> str:
+        """'Take it out of the fridge at 1:00 PM', or '... now' once it's time. Empty when done or not needed."""
+        at = self.prep_at
+        if at is None or self.log is not None or now >= self.dt + DUE_AFTER:
+            return ""
+        note = self.plan["med_prep_note"] or "Get it ready"
+        if now >= at:
+            return f"{note} now"
+        when = fmt_time(at) if at.date() == now.date() else f"{fmt_relative_day(at.date(), now.date()).lower()} at {fmt_time(at)}"
+        return f"{note} at {when}"
 
     def status(self, now: datetime) -> str:
         if self.log is not None:
@@ -306,7 +360,7 @@ class AsNeeded:
     @property
     def next_allowed(self) -> datetime | None:
         if self.last_at and self.gap_hours:
-            return self.last_at + timedelta(hours=self.gap_hours)
+            return real_add(self.last_at, timedelta(hours=self.gap_hours))
         return None
 
     def at_max(self) -> bool:
@@ -324,7 +378,7 @@ class AsNeeded:
         if not (self.last_at and self.gap_hours) or self.available(now):
             return 1.0
         total = self.gap_hours * 3600
-        return min(max((now - self.last_at).total_seconds() / total, 0.0), 1.0)
+        return min(max(real_diff(now, self.last_at).total_seconds() / total, 0.0), 1.0)
 
     def status_text(self, now: datetime) -> str:
         if not self.scheduled_today:
@@ -342,7 +396,50 @@ class AsNeeded:
         nxt = self.next_allowed
         if nxt is None or self.available(now) or not self.scheduled_today:
             return ""
-        return f"in {fmt_duration(nxt - now)}"
+        return f"in {fmt_duration(real_diff(nxt, now))}"
+
+
+# Two people giving the same medicine minutes apart is the classic double dose.
+RECENT_DUPLICATE = timedelta(minutes=30)
+
+
+def early_dose_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetime, by: int | None = None) -> str | None:
+    """A plain sentence if logging a dose at `when` looks like a double dose, or breaks the label's gap or daily limit."""
+    gap, most = med["min_hours_between"], med["max_per_day"]
+    limit = timedelta(hours=gap) if gap else RECENT_DUPLICATE
+    window = limit + timedelta(hours=1)  # wall-clock search; the real gap is checked below
+    near = conn.execute(
+        """SELECT dl.taken_at, dl.logged_by, p.name AS who FROM dose_logs dl LEFT JOIN profiles p ON p.id = dl.logged_by
+            WHERE dl.medication_id = ? AND dl.status = 'taken' AND dl.taken_at > ? AND dl.taken_at < ?
+            ORDER BY abs(julianday(dl.taken_at) - julianday(?)) LIMIT 1""",
+        (med["id"], fmt_local(when - window), fmt_local(when + window), fmt_local(when)),
+    ).fetchone()
+    if near:
+        other = parse_local(near["taken_at"])
+        assert other is not None
+        apart = abs(real_diff(when, other))
+        if apart < limit:
+            if by is not None and near["logged_by"] == by:
+                who = "You logged"
+            elif near["who"]:
+                who = f"{near['who']} logged"
+            else:
+                who = "There's"
+            when_txt = f"{fmt_relative_day(other.date(), when.date()).lower()} at {fmt_time(other)}" \
+                if other.date() != when.date() else f"at {fmt_time(other)}"
+            side = "before this one" if other <= when else "after this time"
+            first = f"{who} one {when_txt}, {fmt_duration(apart)} {side}."
+            if gap:
+                return f"{first} The label says at least {gap:g} hours between doses."
+            return f"{first} Make sure it isn't the same dose logged twice."
+    if most:
+        count = conn.execute(
+            """SELECT COUNT(*) FROM dose_logs WHERE medication_id = ? AND status = 'taken' AND substr(taken_at, 1, 10) = ?""",
+            (med["id"], when.date().isoformat()),
+        ).fetchone()[0]
+        if count >= most:
+            return f"{count} {'dose is' if count == 1 else 'doses are'} already logged that day. The label allows up to {most}."
+    return None
 
 
 def last_taken(conn: sqlite3.Connection, medication_id: int, before: datetime) -> sqlite3.Row | None:

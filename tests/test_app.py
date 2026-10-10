@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import io
 import re
-from datetime import timedelta
+from datetime import date, timedelta
 
 import openpyxl
 
 from chemotracker import backup, profiles, schedule, store
+from chemotracker.db import get_settings
 from chemotracker.db import session
 
 from .conftest import local_now, setup_walkthrough, today
@@ -241,6 +242,25 @@ def test_password_gate(cfg, monkeypatch):
         r = c.post("/login", data={"password": "family", "next": "/"}, follow_redirects=False)
         assert r.status_code == 303
         assert c.get("/", follow_redirects=False).headers["location"] == "/setup"
+
+
+def test_password_is_optional(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from chemotracker.config import load_settings
+    from chemotracker.web import create_app
+
+    # Unset, empty, or blank all mean no sign-in screen.
+    for value in (None, "", "   "):
+        if value is None:
+            monkeypatch.delenv("CHEMO_PASSWORD", raising=False)
+        else:
+            monkeypatch.setenv("CHEMO_PASSWORD", value)
+        cfg = load_settings(tmp_path / f"d{len(value or 'x')}", tmp_path / "b")
+        assert cfg.password is None
+        with TestClient(create_app(cfg, start_scheduler=False)) as c:
+            assert c.get("/", follow_redirects=False).headers["location"] == "/setup"
+            assert c.get("/login", follow_redirects=False).status_code == 303
 
 
 def test_every_page_renders(client, cfg):
@@ -479,3 +499,136 @@ def test_taper_doses_show_on_today(client, cfg):
     with session(cfg.db_path) as conn:
         day1 = [s for s in schedule.slots(conn, schedule.all_cycles(conn)[0], 1) if s.plan["medication_id"] == dex]
     assert [(s.time, s.dose) for s in day1] == [("18:00", "1 tablet (4 mg)")]
+
+
+def test_as_needed_too_soon_asks_first(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))  # Day 3, prochlorperazine every 6 h
+    with session(cfg.db_path) as conn:
+        med = conn.execute("SELECT id FROM medications WHERE info_key = 'prochlorperazine'").fetchone()["id"]
+    client.post("/dose/quick", data={"medication_id": med, "back": "/"})
+    r = client.post("/dose/quick", data={"medication_id": med, "back": "/"})
+    assert r.status_code == 200 and "Check before you log this" in r.text and "6 hours" in r.text
+    with session(cfg.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM dose_logs WHERE medication_id = ?", (med,)).fetchone()[0] == 1
+    r = client.post("/dose/quick", data={"medication_id": med, "back": "/", "confirm": "1"}, follow_redirects=False)
+    assert r.status_code == 303
+    with session(cfg.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM dose_logs WHERE medication_id = ?", (med,)).fetchone()[0] == 2
+    future = (local_now(cfg) + timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M")
+    r = client.post("/dose/new", data={"medication_id": med, "taken_at": future})
+    assert r.status_code == 400 and "hasn&#39;t happened yet" in r.text
+
+
+def test_temperature_units(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    # Default °F; a reading in °C is recognised and converted, with a note.
+    r = client.post("/symptoms/new", data={"symptom": "temperature", "value": "38.2"}, follow_redirects=False)
+    saved = client.get(r.headers["location"]).text
+    assert "100.8\u00a0°F" in saved and "callout-urgent" in saved
+    with session(cfg.db_path) as conn:
+        row = conn.execute("SELECT * FROM symptom_logs").fetchone()
+    assert row["value"] == 100.8 and row["notes"] == "Entered as 38.2 °C."
+    # Switch to °C: the fever line is typed in °C and stored in °F, readings show in °C.
+    r = client.post("/settings", data={"temp_unit": "C", "fever_line": "38.5", "call_if": "Fever"}, follow_redirects=False)
+    assert r.status_code == 303
+    with session(cfg.db_path) as conn:
+        prefs = get_settings(conn)
+    assert prefs["temp_unit"] == "C" and float(prefs["fever_f"]) == 101.3
+    page = client.get("/symptoms").text
+    assert "38.2\u00a0°C" in page and "°F" not in page.split("What are you noticing")[1]
+    form = client.get("/symptoms/new?s=temperature").text
+    assert "Temperature (°C)" in form and "38.5\u00a0°C" in form
+    client.post("/symptoms/new", data={"symptom": "temperature", "value": "37.1"})
+    with session(cfg.db_path) as conn:
+        latest = conn.execute("SELECT * FROM symptom_logs ORDER BY id DESC").fetchone()
+    assert latest["value"] == 98.8 and latest["notes"] is None  # typed in the chosen unit, no note
+    r = client.post("/symptoms/new", data={"symptom": "temperature", "value": "12"})
+    assert r.status_code == 400 and "body temperature" in r.text
+    bad = client.post("/settings", data={"temp_unit": "C", "fever_line": "45"}, follow_redirects=True)
+    assert "fever line should be between" in bad.text
+    wb = openpyxl.load_workbook(io.BytesIO(client.get("/report.xlsx").content))
+    daily = wb["Daily overview"]
+    assert daily.cell(row=4, column=8).value == "Highest temp °C"
+    assert "38.2\u00a0°C" in [wb["Symptoms"].cell(row=i, column=7).value for i in range(5, wb["Symptoms"].max_row + 1)]
+
+
+def test_moving_chemo_moves_later_cycles(client, cfg):
+    day1 = today(cfg)
+    client.get("/")
+    client.post("/setup/people", data={"names[]": ["John"], "roles[0]": "patient", "me": "new:0"})
+    client.post("/setup/cycle", data={"number": "1", "day1": day1.isoformat(), "length_days": "14", "count": "4"})
+    with session(cfg.db_path) as conn:
+        c2 = [c for c in schedule.all_cycles(conn) if c["number"] == 2][0]
+    page = client.get(f"/cycles/{c2['id']}?change=1").text
+    assert "Chemo moved? Change the date" in page and "Move the 2 cycles after this one too" in page
+    new = (date.fromisoformat(c2["day1"]) + timedelta(days=7)).isoformat()
+    r = client.post(f"/cycles/{c2['id']}", data={"day1": new, "number": "2", "length_days": "14", "shift_later": "1"},
+                    follow_redirects=True)
+    assert "moved 7 days later too" in r.text
+    with session(cfg.db_path) as conn:
+        days = {c["number"]: c["day1"] for c in schedule.all_cycles(conn)}
+    assert days == {1: day1.isoformat(), 2: new, 3: (day1 + timedelta(days=35)).isoformat(),
+                    4: (day1 + timedelta(days=49)).isoformat()}
+    # Only this one: later cycles stay put.
+    client.post(f"/cycles/{c2['id']}", data={"day1": c2["day1"], "number": "2", "length_days": "14"})
+    with session(cfg.db_path) as conn:
+        assert {c["number"]: c["day1"] for c in schedule.all_cycles(conn)}[3] == (day1 + timedelta(days=35)).isoformat()
+
+
+def test_medicines_list_and_page_for_non_technical_users(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    page = client.get("/medicines").text
+    assert "At home" in page and "Given at the clinic" in page
+    clinic_part = page.split("Given at the clinic")[1]
+    assert "Add the label details" not in clinic_part  # infusions have no bottle to copy
+    with session(cfg.db_path) as conn:
+        olz = conn.execute("SELECT id FROM medications WHERE info_key = 'olanzapine'").fetchone()["id"]
+        dox = conn.execute("SELECT id FROM medications WHERE info_key = 'doxorubicin'").fetchone()["id"]
+    detail = client.get(f"/medicines/{olz}").text
+    assert "What you take" in detail and "Change details or schedule" in detail
+    assert '<details class="edit-zone" id="edit" >' in detail or '<details class="edit-zone" id="edit">' in detail  # folded
+    assert "What the clinic gives" in client.get(f"/medicines/{dox}").text
+    assert 'id="edit" open' in client.get(f"/medicines/{olz}?edit=1").text
+
+
+def test_prescription_preview_says_when_it_updates(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    html = client.post("/rx/preview", data={"rx_text": "Olanzapine 5 mg tab - Take 1 tablet at bedtime"}).text
+    assert "Already on your list · saving updates it" in html
+    html = client.post("/rx/preview", data={"rx_text": "Lorazepam 0.5 mg tab - Take 1 tablet every 6 hours as needed"}).text
+    assert "In the medicine list" in html
+
+
+def test_rerunning_setup_names_what_it_stops(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    keys = ["doxorubicin", "cyclophosphamide", "paclitaxel", "ondansetron", "prochlorperazine", "dexamethasone", "olanzapine"]
+    r = client.post("/setup/medicines", data={"keys[]": keys}, follow_redirects=True)
+    assert "Stopped Filgrastim because it was unticked" in r.text
+
+
+def test_header_has_a_call_button(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    assert 'class="icon-link call-link" href="tel:555-0100"' in client.get("/").text
+
+
+def test_theme_controls(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    settings = client.get("/settings").text
+    # The theme choice comes first in Settings, in plain words.
+    assert settings.index("Light or dark</h2>") < settings.index("<h2>Care team</h2>")
+    for value, label in (("auto", "Automatic"), ("light", "Light"), ("dark", "Dark")):
+        assert f'value="{value}" data-theme-pick>{label}</label>' in settings
+    assert "Night" not in settings
+    # Desktop sidebar has a one-tap switch. It stays hidden until the script can run it.
+    home = client.get("/").text
+    assert re.search(r"<button[^>]*data-theme-toggle hidden", home)
+    # The saved choice is applied before the page paints, so there is no flash of the wrong theme.
+    assert re.search(r'<script src="/static/js/theme\.js\?v=\w+"></script>', home)  # blocking, not deferred
+    assert home.index("/static/js/theme.js") < home.index("<body>")
+
+
+def test_asset_urls_change_with_content(client):
+    # Cache-busting uses a content hash, so an update reaches phones that cached the old CSS.
+    page = client.get("/settings").text
+    m = re.search(r'/static/css/app\.css\?v=([0-9a-f]{10})"', page)
+    assert m and f"/static/js/app.js?v={m.group(1)}" in page
