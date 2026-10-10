@@ -9,7 +9,7 @@
   <div class="page-head">
     <div>
       <h1>Report for your care team</h1>
-      <p class="sub">An Excel file with a summary, a day-by-day view, every dose, every symptom, and a cycle sheet like the clinic's.</p>
+      <p class="sub">An Excel file with a summary, a day-by-day view, every dose, every symptom (with who logged it), and a cycle sheet like the clinic's.</p>
     </div>
   </div>
 
@@ -56,7 +56,7 @@
         <span class="t">{{ r.when.strftime("%b %d") if r.when else "" }}</span>
         <span class="dot {{ 'is-miss' if r.status == 'Not logged' else ('is-skip' if r.status == 'Skipped' else 'is-dose') }}"></span>
         <div>
-          <div class="what">{{ r.medicine }} <span class="meta">{{ r.status }}{% if r.status == "Taken" %} {{ fmt_time(r.when) }}{% elif r.planned %} · planned {{ fmt_time(r.planned) }}{% endif %}</span></div>
+          <div class="what">{{ r.medicine }} <span class="meta">{{ r.status }}{% if r.status == "Taken" %} {{ fmt_time(r.when) }}{% elif r.planned %} · planned {{ fmt_time(r.planned) }}{% endif %}{% if r.by %} · {{ r.by }}{% endif %}</span></div>
           {% if r.helped or r.dose_feel or r.side_effects %}<div class="note">{{ [("Helped: " ~ r.helped) if r.helped, ("Dose " ~ r.dose_feel | lower) if r.dose_feel, r.side_effects] | select | join(" · ") }}</div>{% endif %}
         </div>
         <span></span>
@@ -74,7 +74,7 @@
       <li>
         <span class="t">{{ s.when.strftime("%b %d") }}</span>
         <span class="dot s{{ s.score }}"></span>
-        <div><div class="what">{{ s.symptom }} <span class="meta">{{ s.reading or s.severity }} · {{ fmt_time(s.when) }}</span></div>{% if s.notes %}<div class="note">{{ s.notes }}</div>{% endif %}</div>
+        <div><div class="what">{{ s.symptom }} <span class="meta">{{ s.reading or s.severity }} · {{ fmt_time(s.when) }}{% if s.by %} · {{ s.by }}{% endif %}</span></div>{% if s.notes %}<div class="note">{{ s.notes }}</div>{% endif %}</div>
         <span></span>
       </li>
       {% endif %}{% endfor %}

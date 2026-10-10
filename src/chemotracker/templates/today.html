@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% from "_ui.html" import icon, status_pill %}
-{% macro dose_row(slot, now, back_url) -%}
+{% from "_ui.html" import icon, status_pill, by_tag %}
+{% macro dose_row(slot, now, back_url, people) -%}
 {%- set p = slot.plan -%}
 <div class="dose {{ 'is-done' if slot.log }}" id="slot-{{ p.id }}-{{ slot.key | replace(' ', '-') | replace(':', '') }}">
   <div class="dose-time">
@@ -11,7 +11,7 @@
     <div class="dose-name"><a href="/medicines/{{ p.medication_id }}">{{ p.med_name }}</a>{% if p.med_strength %} <span class="meta">{{ p.med_strength }}</span>{% endif %}</div>
     {%- set detail = [slot.dose, p.label] | select | join(" · ") %}
     {%- if detail %}<div class="dose-detail">{{ detail }}</div>{% endif %}
-    <div class="dose-status">{{ status_pill(slot, now) }}</div>
+    <div class="dose-status">{{ status_pill(slot, now) }}{% if slot.log %} {{ by_tag(people, slot.log.logged_by, slot.log.updated_by) }}{% endif %}</div>
   </div>
   <div class="dose-side">
     {%- if slot.log %}
@@ -70,6 +70,13 @@
 
   <div class="today">
     <div class="today-main">
+      {% if not people %}
+      <a class="card callout" href="/people" style="text-decoration: none">
+        {{ icon("users") }}
+        <div class="grow"><h3>Add who's using ChemoTracker</h3><p class="meta">Then every dose and symptom shows who logged it.</p></div>
+        {{ icon("chevron-right", "muted") }}
+      </a>
+      {% endif %}
       {% if plan.cycle %}
       <a class="card cycle-strip only-mobile ring-link" href="/cycles/{{ plan.cycle.id }}">
         {{ ring_svg(ring, span, plan.cycle, 200, compact=True) }}
@@ -102,6 +109,7 @@
       <form class="card follow" method="post" action="/dose/{{ f.id }}/follow">
         <input type="hidden" name="back" value="{{ back_url }}">
         <div class="q">How did the {{ f.med_name }} at {{ fmt_time(f.taken_at) }} go?</div>
+        {% if f.logged_by and people.get(f.logged_by) %}<div class="meta">Logged by {{ people[f.logged_by].name }}</div>{% endif %}
         <div class="stack-sm" style="margin-top: var(--s3)">
           <div class="meta">Did it help?</div>
           <div class="segmented" role="radiogroup">
@@ -133,21 +141,21 @@
         </div>
         {% if feelings %}
         <div class="feel-recent" aria-label="Logged today">
-          {% for f in feelings[:6] %}{{ symptom_tag(f, fever_f) }}{% endfor %}
+          {% for f in feelings[:6] %}{{ symptom_tag(f, fever_f, people) }}{% endfor %}
         </div>
         {% endif %}
       </section>
       {% elif feelings %}
       <section class="card feel">
         <h2>Symptoms this day</h2>
-        <div class="feel-recent">{% for f in feelings %}{{ symptom_tag(f, fever_f) }}{% endfor %}</div>
+        <div class="feel-recent">{% for f in feelings %}{{ symptom_tag(f, fever_f, people) }}{% endfor %}</div>
       </section>
       {% endif %}
 
       {% if plan.clinic %}
       <details class="compartment" data-period="clinic" {% if not (plan.clinic | selectattr("log") | list | length == plan.clinic | length) %}open{% endif %}>
         <summary>{{ period_icon("clinic") }}<span class="c-name">At the clinic</span><span class="c-meta">· {{ plan.clinic | length }} {{ "medicine" if plan.clinic | length == 1 else "medicines" }}</span>{{ icon("chevron-down", "chev") }}</summary>
-        <div class="c-body">{% for s in plan.clinic %}{{ dose_row(s, now, back_url) }}{% endfor %}</div>
+        <div class="c-body">{% for s in plan.clinic %}{{ dose_row(s, now, back_url, people) }}{% endfor %}</div>
       </details>
       {% endif %}
 
@@ -159,7 +167,7 @@
           <span class="c-meta">· {% if c.all_done() %}all logged{% else %}{{ n_done }} of {{ c.slots | length }} logged{% endif %}</span>
           {{ icon("chevron-down", "chev") }}
         </summary>
-        <div class="c-body">{% for s in c.slots %}{{ dose_row(s, now, back_url) }}{% endfor %}</div>
+        <div class="c-body">{% for s in c.slots %}{{ dose_row(s, now, back_url, people) }}{% endfor %}</div>
       </details>
       {% endfor %}
 
@@ -173,7 +181,7 @@
             <div>
               <div class="dose-name"><a href="/medicines/{{ an.medication_id }}">{{ an.name }}</a>{% if an.brand %} <span class="meta">({{ an.brand }})</span>{% endif %}</div>
               <div class="dose-detail">{{ [an.strength, an.dose] | select | join(" · ") }}{% if an.gap_hours %}{{ " · " if an.strength or an.dose }}every {{ an.gap_hours | round(1) | string | replace(".0", "") }} hr{% endif %}{% if an.max_per_day %} · up to {{ an.max_per_day }} a day{% endif %}</div>
-              {% if an.last_at %}<div class="dose-detail">Last taken {{ fmt_rel(an.last_at.date(), today) | lower }} {{ fmt_time(an.last_at) }}{% if an.count_today %} · {{ an.count_today }} today{% endif %}</div>{% endif %}
+              {% if an.last_at %}<div class="dose-detail">Last taken {{ fmt_rel(an.last_at.date(), today) | lower }} {{ fmt_time(an.last_at) }}{% if an.last.logged_by and people.get(an.last.logged_by) %} by {{ people[an.last.logged_by].name }}{% endif %}{% if an.count_today %} · {{ an.count_today }} today{% endif %}</div>{% endif %}
               {% if not an.gap_hours %}<div class="dose-detail"><a href="/medicines/{{ an.medication_id }}">Add the hours between doses from the label</a></div>{% endif %}
             </div>
             {% if day > today %}

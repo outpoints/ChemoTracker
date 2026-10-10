@@ -327,7 +327,7 @@ def dose_log(conn: sqlite3.Connection, log_id: int) -> sqlite3.Row | None:
 
 
 def log_slot(conn: sqlite3.Connection, plan_row: sqlite3.Row, slot: str, status: str, taken_at: datetime | None,
-             dose: str | None) -> int:
+             dose: str | None, by: int | None = None) -> int:
     """Record a planned dose. Idempotent per (plan, slot): a second tap updates instead of duplicating."""
     if status not in ("taken", "skipped"):
         raise InvalidInput("Unknown status.")
@@ -335,29 +335,33 @@ def log_slot(conn: sqlite3.Connection, plan_row: sqlite3.Row, slot: str, status:
     taken = taken_at.strftime("%Y-%m-%d %H:%M") if (taken_at and status == "taken") else None
     existing = conn.execute("SELECT id FROM dose_logs WHERE plan_id = ? AND slot = ?", (plan_row["id"], slot)).fetchone()
     if existing:
-        conn.execute("UPDATE dose_logs SET status = ?, taken_at = ?, dose = COALESCE(?, dose), updated_at = ? WHERE id = ?",
-                     (status, taken, dose, now, existing["id"]))
+        conn.execute(
+            """UPDATE dose_logs SET status = ?, taken_at = ?, dose = COALESCE(?, dose), updated_at = ?,
+                      updated_by = COALESCE(?, updated_by) WHERE id = ?""",
+            (status, taken, dose, now, by, existing["id"]),
+        )
         return existing["id"]
     cur = conn.execute(
-        """INSERT INTO dose_logs (medication_id, plan_id, kind, slot, status, taken_at, dose, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        (plan_row["medication_id"], plan_row["id"], plan_row["kind"], slot, status, taken, dose, now, now),
+        """INSERT INTO dose_logs (medication_id, plan_id, kind, slot, status, taken_at, dose, logged_by, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (plan_row["medication_id"], plan_row["id"], plan_row["kind"], slot, status, taken, dose, by, now, now),
     )
     return rowid(cur)
 
 
 def log_dose(conn: sqlite3.Connection, med_id: int, taken_at: datetime, dose: str | None, reason: str | None,
-             plan_id: int | None = None) -> int:
+             plan_id: int | None = None, by: int | None = None) -> int:
     now = utcnow()
     cur = conn.execute(
-        """INSERT INTO dose_logs (medication_id, plan_id, kind, slot, status, taken_at, dose, reason, created_at, updated_at)
-           VALUES (?,?,'as_needed',NULL,'taken',?,?,?,?,?)""",
-        (med_id, plan_id, taken_at.strftime("%Y-%m-%d %H:%M"), clean(dose), clean(reason), now, now),
+        """INSERT INTO dose_logs (medication_id, plan_id, kind, slot, status, taken_at, dose, reason, logged_by,
+                                  created_at, updated_at)
+           VALUES (?,?,'as_needed',NULL,'taken',?,?,?,?,?,?)""",
+        (med_id, plan_id, taken_at.strftime("%Y-%m-%d %H:%M"), clean(dose), clean(reason), by, now, now),
     )
     return rowid(cur)
 
 
-def update_dose_log(conn: sqlite3.Connection, log_id: int, values: dict, fallback: datetime) -> None:
+def update_dose_log(conn: sqlite3.Connection, log_id: int, values: dict, fallback: datetime, by: int | None = None) -> None:
     status = values.get("status") or "taken"
     if status not in ("taken", "skipped"):
         raise InvalidInput("Unknown status.")
@@ -376,13 +380,14 @@ def update_dose_log(conn: sqlite3.Connection, log_id: int, values: dict, fallbac
     taken = parse_local_dt(values.get("taken_at"), fallback) if status == "taken" else None
     conn.execute(
         """UPDATE dose_logs SET status = ?, taken_at = ?, dose = ?, reason = ?, helped = ?, dose_feel = ?,
-                  side_effects = ?, notes = ?, updated_at = ? WHERE id = ?""",
+                  side_effects = ?, notes = ?, updated_at = ?, updated_by = COALESCE(?, updated_by) WHERE id = ?""",
         (status, taken.strftime("%Y-%m-%d %H:%M") if taken else None, clean(values.get("dose")),
-         clean(values.get("reason")), helped, feel, clean(effects), clean(values.get("notes")), utcnow(), log_id),
+         clean(values.get("reason")), helped, feel, clean(effects), clean(values.get("notes")), utcnow(), by, log_id),
     )
 
 
-def quick_follow_up(conn: sqlite3.Connection, log_id: int, helped: str | None, dose_feel: str | None) -> None:
+def quick_follow_up(conn: sqlite3.Connection, log_id: int, helped: str | None, dose_feel: str | None,
+                    by: int | None = None) -> None:
     sets, args = [], []
     if helped in HELPED:
         sets.append("helped = ?")
@@ -391,7 +396,10 @@ def quick_follow_up(conn: sqlite3.Connection, log_id: int, helped: str | None, d
         sets.append("dose_feel = ?")
         args.append(dose_feel)
     if sets:
-        conn.execute(f"UPDATE dose_logs SET {', '.join(sets)}, updated_at = ? WHERE id = ?", [*args, utcnow(), log_id])
+        conn.execute(
+            f"UPDATE dose_logs SET {', '.join(sets)}, updated_at = ?, updated_by = COALESCE(?, updated_by) WHERE id = ?",
+            [*args, utcnow(), by, log_id],
+        )
 
 
 def delete_dose_log(conn: sqlite3.Connection, log_id: int) -> None:
@@ -460,24 +468,25 @@ def validate_symptom(values: dict, fallback: datetime) -> dict:
     }
 
 
-def add_symptom(conn: sqlite3.Connection, values: dict, fallback: datetime) -> int:
+def add_symptom(conn: sqlite3.Connection, values: dict, fallback: datetime, by: int | None = None) -> int:
     data = validate_symptom(values, fallback)
     now = utcnow()
     cur = conn.execute(
-        """INSERT INTO symptom_logs (logged_at, symptom, label, severity, value, notes, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (data["logged_at"], data["symptom"], data["label"], data["severity"], data["value"], data["notes"], now, now),
+        """INSERT INTO symptom_logs (logged_at, symptom, label, severity, value, notes, logged_by, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (data["logged_at"], data["symptom"], data["label"], data["severity"], data["value"], data["notes"], by, now, now),
     )
     return rowid(cur)
 
 
-def update_symptom(conn: sqlite3.Connection, entry_id: int, values: dict, fallback: datetime) -> None:
+def update_symptom(conn: sqlite3.Connection, entry_id: int, values: dict, fallback: datetime,
+                   by: int | None = None) -> None:
     data = validate_symptom(values, fallback)
     conn.execute(
         """UPDATE symptom_logs SET logged_at = ?, symptom = ?, label = ?, severity = ?, value = ?, notes = ?,
-                  updated_at = ? WHERE id = ?""",
+                  updated_at = ?, updated_by = COALESCE(?, updated_by) WHERE id = ?""",
         (data["logged_at"], data["symptom"], data["label"], data["severity"], data["value"], data["notes"],
-         utcnow(), entry_id),
+         utcnow(), by, entry_id),
     )
 
 

@@ -40,7 +40,8 @@
               {% set c = r.cells[dn] %}
               {% set d = day1 + timedelta(days=dn - 1) %}
               {% set cls = "missing" if c.missing else ("taken" if c.taken else ("skipped" if c.skipped else ("upcoming" if c.upcoming else ("allowed" if c.allowed else "")))) %}
-              <td class="cell {{ cls }} {{ 'today-col' if d == today }}">
+              {% set names = (c.taken + c.skipped) | map(attribute="logged_by") | select | map("person_name", people) | unique | join(", ") %}
+              <td class="cell {{ cls }} {{ 'today-col' if d == today }}"{% if names %} title="Logged by {{ names }}"{% endif %}>
                 {%- for t in c.taken %}✓{% if t.taken_at and r.kind != "clinic" %} {{ fmt_time(t.taken_at) | replace(" AM", "a") | replace(" PM", "p") }}{% endif %}<br>{% endfor -%}
                 {%- if c.allowed and not c.taken %}<span class="visually-hidden">allowed</span>{% endif -%}
                 {%- for t in c.skipped %}–<br>{% endfor -%}

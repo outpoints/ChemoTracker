@@ -2,6 +2,15 @@
 
 A small self-hosted web app for keeping track of chemotherapy supportive medicines and symptoms. It works on phones and computers.
 
+<p>
+  <img src="docs/screenshots/today-phone.png" alt="Today on a phone: cycle ring, symptom buttons, time-of-day compartments" width="260">
+  <img src="docs/screenshots/symptom-saved-phone.png" alt="After logging nausea: your as-needed medicines and when each is allowed" width="260">
+  <img src="docs/screenshots/today-phone-night.png" alt="Night mode" width="260">
+</p>
+<img src="docs/screenshots/today-desktop.png" alt="Today on a computer" width="800">
+
+Screenshots use made-up demo data (`scripts/demo_seed.py`).
+
 - **Today** groups doses into Morning, Afternoon, Evening and Bedtime by their scheduled time, plus clinic medicines on chemo day. Each dose has a large **Taken** button and a **Skip** button. Accidental taps can be undone.
 - **As-needed medicines** show a countdown ring to when the next dose is allowed, based on the label (for example "every 6 hours"). The app also respects the days the clinic allows them.
 - After a dose, the app asks **did it help?** and **how was the dose?** (about right, too strong, not enough). You can add side effects and notes.
@@ -11,6 +20,7 @@ A small self-hosted web app for keeping track of chemotherapy supportive medicin
 - **Medicine catalog**: about 50 medicines with plain-language summaries from MedlinePlus. It covers AC-T and other common chemo, targeted and hormone therapy, anti-nausea medicines, white-blood-cell boosters, pre-medicines, and bowel and comfort medicines. You can add custom medicines.
 - **First-run walkthrough**: pick your medicines, copy each pharmacy label, set chemo day, add the care team's numbers. Everything stays editable later. There are no fixed protocol templates, because every person's schedule is different.
 - **Automatic backups**: daily at 3:00 AM by default, to a folder you choose. Each backup is the database plus the Excel report.
+- **People**: add the patient, family and caregivers. Each phone or computer remembers who is using it, and every dose and symptom records who logged it and who edited it ("John · edited by Jane"). The Excel and CSV reports include a "Logged by" column and a per-person count. Profiles are for attribution, not security. The family password is the lock.
 - **Night mode** for bedtime doses, and fonts built for low-vision legibility (Atkinson Hyperlegible).
 
 ChemoTracker keeps a record. It does not give medical advice, and the pharmacy label and your care team's instructions always come first.
@@ -85,6 +95,28 @@ A CSV looks simple, but as the live store it breaks quickly. Two phones saving a
 
 So SQLite is the source of truth, and Excel and CSV files are generated from it whenever you need them. The care team gets clean, consistent files, and the data stays safe.
 
+## People and devices
+
+The first-run walkthrough asks who is using the app. After that:
+
+- A phone or computer that hasn't been used before asks **Who's using this?** once and remembers the answer.
+- Tap your name in the header (phone) or the sidebar (computer) to switch, for example when handing the phone to someone else.
+- **Settings → People** adds, renames or removes people. Removed people keep their name on past entries.
+
+<img src="docs/screenshots/people-phone.png" alt="Who's using this? picker" width="260">
+
+## Demo data
+
+To try the app or take screenshots without touching real data:
+
+```bash
+uv run python scripts/demo_seed.py /tmp/chemotracker-demo
+CHEMO_DATA_DIR=/tmp/chemotracker-demo/data CHEMO_BACKUP_ENABLED=0 uv run chemotracker
+uv run --with playwright python scripts/screenshots.py http://127.0.0.1:8000 docs/screenshots
+```
+
+The demo has three made-up people (John, Jane, Sam) and example doses. It refuses to overwrite an existing database unless you pass `--force`.
+
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/).
@@ -104,6 +136,7 @@ Layout:
 - `backup.py`: backup scheduler, snapshots, pruning
 - `medinfo.py`: the medicine catalog
 - `symptoms.py`: the symptom list and severity wording
+- `profiles.py`: people and "logged by" attribution
 - `templates/` and `static/`: UI (no JavaScript build step, and every page works without JavaScript)
 
 Planned doses are not stored. They are computed from each cycle's Day 1 and the medicine's schedule (for example "Days 2–4 at 9:00 PM"), so moving chemo day moves every dose.

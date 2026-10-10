@@ -1,4 +1,4 @@
-{% from "_ui.html" import icon %}<!doctype html>
+{% from "_ui.html" import icon, avatar %}<!doctype html>
 <html lang="en" data-theme="auto">
 <head>
   <meta charset="utf-8">
@@ -36,6 +36,9 @@
       <a href="/settings" {% if active == "settings" %}aria-current="page"{% endif %}>{{ icon("settings") }}Settings</a>
     </nav>
     <div class="sidebar-foot stack-sm">
+      {% if me %}
+      <a class="me-chip" href="/who?next={{ request.url.path }}" title="Switch person">{{ avatar(me) }}<span class="grow"><span class="meta">Using as</span><br><strong>{{ me.name }}</strong></span><span class="meta">Switch</span></a>
+      {% endif %}
       {% if prefs.clinic_phone %}
       <div class="meta">Care team</div>
       <a class="phone-link" href="tel:{{ prefs.clinic_phone | replace(' ', '') }}">{{ icon("phone") }}{{ prefs.clinic_phone }}</a>
@@ -48,7 +51,10 @@
 
   <header class="topbar">
     <a class="brand" href="/"><img class="brand-mark" src="/static/icon.svg" alt="">ChemoTracker</a>
-    <a class="icon-link" href="/settings" aria-label="Settings" {% if active == "settings" %}aria-current="page"{% endif %}>{{ icon("settings") }}</a>
+    <span class="row" style="gap: var(--s2)">
+      {% if me %}<a class="me-chip compact" href="/who?next={{ request.url.path }}" aria-label="Using as {{ me.name }}. Switch person">{{ avatar(me) }}<span>{{ me.name }}</span></a>{% endif %}
+      <a class="icon-link" href="/settings" aria-label="Settings" {% if active == "settings" %}aria-current="page"{% endif %}>{{ icon("settings") }}</a>
+    </span>
   </header>
 
   <main class="content" id="main">

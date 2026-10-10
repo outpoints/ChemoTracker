@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}People · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon, avatar %}
+<div class="page page-narrow">
+  <a class="btn btn-quiet" href="/settings" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Settings</a>
+  <div class="page-head" style="margin-top: var(--s2)">
+    <div>
+      <h1>People</h1>
+      <p class="sub">Everyone who logs doses or symptoms. Each entry, and the care-team report, shows who logged it.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    {% if active_people %}
+    <ul class="list">
+      {% for p in active_people %}
+      {% set n = counts.get(p.id, (0, 0)) %}
+      <li>
+        <details class="person-edit">
+          <summary class="list-item">
+            {{ avatar(p) }}
+            <span class="grow"><span class="title">{{ p.name }}</span>{% if me and me.id == p.id %} <span class="badge">This device</span>{% endif %}<br>
+              <span class="meta">{{ roles[p.role] }} · {{ n[0] }} doses, {{ n[1] }} symptoms logged</span></span>
+            {{ icon("edit", "chev") }}
+          </summary>
+          <div class="card-body stack">
+            <form class="form" method="post" action="/people/{{ p.id }}">
+              <div class="field"><label for="name-{{ p.id }}">Name</label><input id="name-{{ p.id }}" name="name" type="text" value="{{ p.name }}" maxlength="40" required></div>
+              <div class="segmented" role="radiogroup" aria-label="Role">
+                {% for k, label in roles.items() %}<label><input type="radio" name="role" value="{{ k }}" {% if p.role == k %}checked{% endif %}>{{ label }}</label>{% endfor %}
+              </div>
+              <button class="btn btn-primary" type="submit">Save</button>
+            </form>
+            <div class="row-wrap">
+              {% if not me or me.id != p.id %}
+              <form method="post" action="/who"><input type="hidden" name="profile_id" value="{{ p.id }}"><input type="hidden" name="next" value="/people"><button class="btn btn-secondary btn-sm" type="submit">Use this device as {{ p.name }}</button></form>
+              {% endif %}
+              <form method="post" action="/people/{{ p.id }}/active" data-confirm="Remove {{ p.name }} from the list? Their past entries keep their name.">
+                <input type="hidden" name="active" value="0"><button class="btn btn-danger btn-sm" type="submit">Remove from list</button>
+              </form>
+            </div>
+          </div>
+        </details>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="empty"><p>No one yet. Add yourself below.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="section-title"><h2>Add someone</h2></div>
+  <form class="card card-pad form" method="post" action="/people">
+    <div class="field"><label for="new-name">Name</label><input id="new-name" name="name" type="text" maxlength="40" required placeholder="For example: Jane" autocomplete="off"></div>
+    <div class="segmented" role="radiogroup" aria-label="Role">
+      {% for k, label in roles.items() %}<label><input type="radio" name="role" value="{{ k }}" {% if k == "family" %}checked{% endif %}>{{ label }}</label>{% endfor %}
+    </div>
+    <label class="check"><input type="checkbox" name="use_now" value="1"><span><span class="t">I'm this person</span><span class="d">Switch this device to them now</span></span></label>
+    <button class="btn btn-primary" type="submit">{{ icon("plus") }}Add</button>
+  </form>
+
+  {% if archived %}
+  <div class="section-title"><h2>Removed</h2><span class="meta">Their entries keep their name</span></div>
+  <div class="card">
+    <ul class="list">
+      {% for p in archived %}
+      <li class="list-item">{{ avatar(p) }}<span class="grow"><span class="title" style="color: var(--text-2)">{{ p.name }}</span><br><span class="meta">{{ roles[p.role] }}</span></span>
+        <form method="post" action="/people/{{ p.id }}/active"><input type="hidden" name="active" value="1"><button class="btn btn-quiet btn-sm" type="submit">Add back</button></form>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <p class="meta" style="margin: var(--s6) 0">Profiles show who logged what. They aren't passwords: anyone with the device can switch. Use the family password to keep others out.</p>
+</div>
+{% endblock %}

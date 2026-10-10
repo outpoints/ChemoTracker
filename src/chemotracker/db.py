@@ -112,6 +112,22 @@ MIGRATIONS: list[str] = [
         error      TEXT
     );
     """,
+    # v2: people who use the app, and who logged / last edited each entry.
+    # Profiles are attribution, not security: anyone on a device can switch.
+    """
+    CREATE TABLE profiles (
+        id         INTEGER PRIMARY KEY,
+        name       TEXT NOT NULL,
+        role       TEXT NOT NULL DEFAULT 'family' CHECK (role IN ('patient', 'family', 'caregiver')),
+        color      TEXT NOT NULL,
+        active     INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+    );
+    ALTER TABLE dose_logs ADD COLUMN logged_by INTEGER REFERENCES profiles(id) ON DELETE SET NULL;
+    ALTER TABLE dose_logs ADD COLUMN updated_by INTEGER REFERENCES profiles(id) ON DELETE SET NULL;
+    ALTER TABLE symptom_logs ADD COLUMN logged_by INTEGER REFERENCES profiles(id) ON DELETE SET NULL;
+    ALTER TABLE symptom_logs ADD COLUMN updated_by INTEGER REFERENCES profiles(id) ON DELETE SET NULL;
+    """,
 ]
 
 

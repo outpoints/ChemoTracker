@@ -17,12 +17,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, backup, export, medinfo, schedule, store
+from . import __version__, backup, export, medinfo, profiles, schedule, store
 from . import symptoms as sx
 from .config import PACKAGE_DIR, Settings, load_settings
 from .db import get_settings, migrate, put_settings, session
 
 PUBLIC_PATHS = ("/static/", "/healthz", "/login", "/manifest.webmanifest")
+# Pages that work before anyone on this device has said who they are.
+NO_PROFILE_PATHS = PUBLIC_PATHS + ("/who", "/people", "/setup", "/logout", "/report.xlsx", "/report-",
+                                   "/settings/database")
 
 
 def create_app(settings: Settings | None = None, start_scheduler: bool = True) -> FastAPI:
@@ -45,9 +48,18 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
 
     @app.middleware("http")
     async def auth_gate(request: Request, call_next):
+        nxt = request.url.path + (f"?{request.url.query}" if request.url.query else "")
         if cfg.password and not request.url.path.startswith(PUBLIC_PATHS) and not request.session.get("auth"):
-            nxt = request.url.path + (f"?{request.url.query}" if request.url.query else "")
             return RedirectResponse(f"/login?{urlencode({'next': nxt})}", status_code=303)
+        if request.method == "GET" and not request.url.path.startswith(NO_PROFILE_PATHS):
+            with session(cfg.db_path) as conn:
+                ready = bool(get_settings(conn).get("onboarded"))
+                people = profiles.all_profiles(conn)
+            if ready and people and request.session.get("profile_id") not in {p["id"] for p in people}:
+                if len(people) == 1:
+                    request.session["profile_id"] = people[0]["id"]
+                else:
+                    return RedirectResponse(f"/who?{urlencode({'next': nxt})}", status_code=303)
         response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "same-origin")
@@ -69,9 +81,21 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     def db():
         return session(cfg.db_path)
 
+    def me(request: Request) -> int | None:
+        """The person using this device, if they still exist and are active."""
+        pid = request.session.get("profile_id")
+        if not pid:
+            return None
+        with db() as conn:
+            row = profiles.get(conn, pid)
+        return pid if row and row["active"] else None
+
     def render(request: Request, name: str, status_code: int = 200, **context: Any) -> HTMLResponse:
         with db() as conn:
             prefs = get_settings(conn)
+            people = profiles.by_id(conn)
+        pid = request.session.get("profile_id")
+        current_person = people.get(pid) if pid else None
         current = now()
         context.setdefault("active", "")
         return templates.TemplateResponse(
@@ -85,6 +109,8 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 "flash": request.session.pop("flash", None),
                 "password_on": bool(cfg.password),
                 "version": __version__,
+                "people": people,
+                "me": current_person if current_person and current_person["active"] else None,
                 **context,
             },
             status_code=status_code,
@@ -211,7 +237,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 default_time = datetime.combine(slot.date, current.time())
             taken_at = store.parse_local_dt(data.get("taken_at"), default_time)
             med = store.medication(conn, plan_row["medication_id"])
-            log_id = store.log_slot(conn, plan_row, slot.key, status, taken_at, slot.dose or None)
+            log_id = store.log_slot(conn, plan_row, slot.key, status, taken_at, slot.dose or None, by=me(request))
         name = med["name"] if med else "Dose"
         msg = (
             {"text": f"{name} marked taken at {schedule.fmt_time(taken_at)}.", "undo": log_id,
@@ -236,7 +262,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             if med is None:
                 raise HTTPException(404)
             log_id = store.log_dose(conn, med["id"], current, med["dose"], data.get("reason"),
-                                    int(data["plan_id"]) if data.get("plan_id") else None)
+                                    int(data["plan_id"]) if data.get("plan_id") else None, by=me(request))
         return go(back(data.get("back")),
                   {"text": f"{med['name']} logged at {schedule.fmt_time(current)}.", "undo": log_id, "follow": log_id},
                   request)
@@ -261,7 +287,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 raise HTTPException(404)
             try:
                 when = store.parse_local_dt(data.get("taken_at"), current)
-                log_id = store.log_dose(conn, m["id"], when, data.get("dose"), data.get("reason"))
+                log_id = store.log_dose(conn, m["id"], when, data.get("dose"), data.get("reason"), by=me(request))
             except store.InvalidInput as exc:
                 return render(request, "dose_new.html", status_code=400, active="today", med=m,
                               reason=data.get("reason", ""), info=[], error=str(exc), values=data)
@@ -284,7 +310,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             if row is None:
                 raise HTTPException(404)
             try:
-                store.update_dose_log(conn, log_id, data, now())
+                store.update_dose_log(conn, log_id, data, now(), by=me(request))
             except store.InvalidInput as exc:
                 return render(request, "dose.html", status_code=400, active="today", log=row, saved=False,
                               error=str(exc), chips=medinfo.chips_for(row["med_info"]),
@@ -295,7 +321,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     async def follow_dose(request: Request, log_id: int):
         data = await form(request)
         with db() as conn:
-            store.quick_follow_up(conn, log_id, data.get("helped"), data.get("dose_feel"))
+            store.quick_follow_up(conn, log_id, data.get("helped"), data.get("dose_feel"), by=me(request))
         return go(back(data.get("back")), "Thanks, noted.", request)
 
     @app.post("/dose/{log_id}/delete")
@@ -336,7 +362,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         data = await form(request)
         try:
             with db() as conn:
-                entry_id = store.add_symptom(conn, data, now())
+                entry_id = store.add_symptom(conn, data, now(), by=me(request))
         except store.InvalidInput as exc:
             return render(request, "symptom_form.html", status_code=400, active="symptoms",
                           sym=sx.lookup(data.get("symptom")), entry=None, error=str(exc), values=data,
@@ -373,7 +399,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         data = await form(request)
         try:
             with db() as conn:
-                store.update_symptom(conn, entry_id, data, now())
+                store.update_symptom(conn, entry_id, data, now(), by=me(request))
         except store.InvalidInput as exc:
             with db() as conn:
                 entry = store.symptom_log(conn, entry_id)
@@ -646,18 +672,116 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         return StreamingResponse(stream, media_type="application/vnd.sqlite3",
                                  headers={"Content-Disposition": f'attachment; filename="{result.path.name}"'})
 
+    # ------------------------------------------------------------ people
+
+    @app.get("/who", response_class=HTMLResponse)
+    def who_page(request: Request, next: str = "/"):
+        with db() as conn:
+            people = profiles.all_profiles(conn)
+        if not people:
+            return go("/people")
+        return render(request, "who.html", active="", people_list=people, nxt=back(next))
+
+    @app.post("/who")
+    async def who_pick(request: Request):
+        data = await form(request)
+        with db() as conn:
+            row = profiles.get(conn, int(data.get("profile_id") or 0))
+        if row is None or not row["active"]:
+            return go("/who", "Pick someone from the list.", request)
+        request.session["profile_id"] = row["id"]
+        return go(back(data.get("next")), f"Hi {row['name']}. Entries you log now show your name.", request)
+
+    @app.get("/people", response_class=HTMLResponse)
+    def people_page(request: Request):
+        with db() as conn:
+            active = profiles.all_profiles(conn, active=True)
+            archived = profiles.all_profiles(conn, active=False)
+            counts = profiles.entry_counts(conn)
+        return render(request, "people.html", active="settings", active_people=active, archived=archived,
+                      counts=counts)
+
+    @app.post("/people")
+    async def people_add(request: Request):
+        data = await form(request)
+        try:
+            with db() as conn:
+                pid = profiles.create(conn, data.get("name"), data.get("role"))
+        except profiles.InvalidProfile as exc:
+            return go("/people", str(exc), request)
+        if data.get("use_now") or not request.session.get("profile_id"):
+            request.session["profile_id"] = pid
+        return go(back(data.get("back"), "/people"), "Added.", request)
+
+    @app.post("/people/{profile_id}")
+    async def people_save(request: Request, profile_id: int):
+        data = await form(request)
+        try:
+            with db() as conn:
+                profiles.update(conn, profile_id, data.get("name"), data.get("role"))
+        except profiles.InvalidProfile as exc:
+            return go("/people", str(exc), request)
+        return go("/people", "Saved. Past entries show the new name.", request)
+
+    @app.post("/people/{profile_id}/active")
+    async def people_active(request: Request, profile_id: int):
+        data = await form(request)
+        on = data.get("active") == "1"
+        with db() as conn:
+            if not on and len(profiles.all_profiles(conn)) <= 1:
+                return go("/people", "Keep at least one person.", request)
+            profiles.set_active(conn, profile_id, on)
+        if not on and request.session.get("profile_id") == profile_id:
+            request.session.pop("profile_id", None)
+        return go("/people", "Back on the list." if on else "Removed from the list. Their past entries keep their name.",
+                  request)
+
     # ------------------------------------------------------------ setup walkthrough
 
     @app.get("/setup", response_class=HTMLResponse)
     def setup_welcome(request: Request):
         return render(request, "setup_welcome.html", step=0)
 
+    @app.get("/setup/people", response_class=HTMLResponse)
+    def setup_people(request: Request):
+        with db() as conn:
+            existing = profiles.all_profiles(conn)
+        return render(request, "setup_people.html", step=1, existing=existing, error=None, values={})
+
+    @app.post("/setup/people")
+    async def setup_people_save(request: Request):
+        data = await form(request)
+        names = _as_list(data.get("names"))
+        roles = [str(data.get(f"roles[{i}]") or "family") for i in range(len(names))]
+        choice = str(data.get("me") or "")
+        with db() as conn:
+            existing = profiles.all_profiles(conn)
+            created: list[int] = []
+            try:
+                for i, name in enumerate(names):
+                    if store.clean(name):
+                        created.append(profiles.create(conn, name, roles[i] if i < len(roles) else "family"))
+                    elif i == 0 and not existing:
+                        raise profiles.InvalidProfile("Enter your name, so entries show who logged them.")
+            except profiles.InvalidProfile as exc:
+                conn.rollback()
+                return render(request, "setup_people.html", status_code=400, step=1, existing=existing,
+                              error=str(exc), values=data)
+            ids = [p["id"] for p in existing]
+            if choice.startswith("p:") and choice[2:].isdigit() and int(choice[2:]) in ids:
+                request.session["profile_id"] = int(choice[2:])
+            elif created:
+                request.session["profile_id"] = created[0]
+            elif ids:
+                request.session.setdefault("profile_id", ids[0])
+        return go("/setup/medicines")
+
     @app.get("/setup/medicines", response_class=HTMLResponse)
     def setup_medicines(request: Request):
         with db() as conn:
             chosen = {m["info_key"] for m in store.medications(conn, active=True) if m["info_key"]}
             custom = [m for m in store.medications(conn, active=True) if not m["info_key"]]
-        return render(request, "setup_medicines.html", step=1, catalog=medinfo.by_category(), chosen=chosen,
+        return render(request, "setup_medicines.html", step=2, catalog=medinfo.by_category(), chosen=chosen,
                       custom=custom, shortcuts=medinfo.REGIMEN_SHORTCUTS)
 
     @app.post("/setup/medicines")
@@ -689,7 +813,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 return go("/setup/cycle")
             med = meds[index]
             plans = store.plans(conn, med["id"])
-        return render(request, "setup_label.html", step=2, med=med, plan=plans[0] if plans else None,
+        return render(request, "setup_label.html", step=3, med=med, plan=plans[0] if plans else None,
                       extra_plans=len(plans) - 1, index=index, total=len(meds), info=medinfo.lookup(med["info_key"]),
                       error=None, length=14)
 
@@ -710,7 +834,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                     store.create_plan(conn, med["id"], data)
             except store.InvalidInput as exc:
                 conn.rollback()
-                return render(request, "setup_label.html", status_code=400, step=2, med=med,
+                return render(request, "setup_label.html", status_code=400, step=3, med=med,
                               plan=_plan_from_form(data, plans[0] if plans else None), extra_plans=len(plans) - 1,
                               index=index, total=len(meds), info=medinfo.lookup(med["info_key"]), error=str(exc),
                               length=14, values=data)
@@ -723,7 +847,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             count = len(store.medications(conn, active=True))
         values = dict(existing) if existing else {"number": 1, "day1": now().date().isoformat(), "length_days": 14,
                                                   "regimen": ""}
-        return render(request, "setup_cycle.html", step=3, values=values, existing=existing, error=None, count=count)
+        return render(request, "setup_cycle.html", step=4, values=values, existing=existing, error=None, count=count)
 
     @app.post("/setup/cycle")
     async def setup_cycle_save(request: Request):
@@ -736,13 +860,13 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 else:
                     store.create_cycle(conn, data)
         except store.InvalidInput as exc:
-            return render(request, "setup_cycle.html", status_code=400, step=3, values=data, existing=None,
+            return render(request, "setup_cycle.html", status_code=400, step=4, values=data, existing=None,
                           error=str(exc), count=0)
         return go("/setup/team")
 
     @app.get("/setup/team", response_class=HTMLResponse)
     def setup_team(request: Request):
-        return render(request, "setup_team.html", step=4, error=None)
+        return render(request, "setup_team.html", step=5, error=None)
 
     @app.post("/setup/team")
     async def setup_team_save(request: Request):
@@ -750,7 +874,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         try:
             store.parse_float(data.get("fever_f"), "Fever line", 97, 104)
         except store.InvalidInput as exc:
-            return render(request, "setup_team.html", status_code=400, step=4, error=str(exc))
+            return render(request, "setup_team.html", status_code=400, step=5, error=str(exc))
         with db() as conn:
             put_settings(conn, {**{k: str(v).strip() for k, v in data.items()}, "onboarded": "1"})
         return go("/", "All set. Today shows what's due. Tap a symptom any time you notice one.", request)
@@ -852,8 +976,11 @@ def short_wait(an: schedule.AsNeeded, now: datetime) -> str:
 def _template_globals(templates: Jinja2Templates) -> None:
     env = templates.env
     env.filters["fmt_time"] = schedule.fmt_time
+    env.filters["person_name"] = lambda pid, people: profiles.name_of(people, pid)
     env.globals.update(
         ring_points=ring_points,
+        initials=profiles.initials,
+        roles=profiles.ROLES,
         short_wait=short_wait,
         score=schedule.symptom_score,
         fmt_time=schedule.fmt_time,

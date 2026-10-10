@@ -13,6 +13,8 @@ backups/
 *.jpeg
 *.heic
 !src/chemotracker/static/**/*.png
+# README screenshots: fictional demo data only (scripts/demo_seed.py)
+!docs/screenshots/*.png
 
 # Python / tooling
 __pycache__/

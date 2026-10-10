@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.worksheet.worksheet import Worksheet
 
-from . import medinfo, schedule, store
+from . import medinfo, profiles, schedule, store
 from . import symptoms as sx
 from .db import get_settings
 
@@ -59,6 +59,7 @@ class DoseRow:
     dose_feel: str
     side_effects: str
     notes: str
+    by: str = ""
 
 
 @dataclass
@@ -71,6 +72,7 @@ class SymptomRow:
     reading: str
     score: int
     notes: str
+    by: str = ""
 
 
 def _cycle_day(conn: sqlite3.Connection, d: date, cache: dict) -> tuple[int | None, int | None]:
@@ -82,6 +84,7 @@ def _cycle_day(conn: sqlite3.Connection, d: date, cache: dict) -> tuple[int | No
 
 def dose_rows(conn: sqlite3.Connection, start: date, end: date, now: datetime) -> list[DoseRow]:
     cache: dict = {}
+    people = profiles.by_id(conn)
     rows: list[DoseRow] = []
     for r in store.doses_between(conn, start, end):
         when = schedule.parse_local(r["taken_at"])
@@ -94,7 +97,7 @@ def dose_rows(conn: sqlite3.Connection, start: date, end: date, now: datetime) -
             strength=r["med_strength"] or "", dose=r["dose"] or r["med_dose"] or "", kind=KIND_SHORT.get(r["kind"], r["kind"]),
             status=STATUS_TEXT[r["status"]], reason=r["reason"] or "", helped=store.HELPED.get(r["helped"] or "", ""),
             dose_feel=store.DOSE_FEEL.get(r["dose_feel"] or "", ""), side_effects=r["side_effects"] or "",
-            notes=r["notes"] or "",
+            notes=r["notes"] or "", by=profiles.attribution(people, r["logged_by"], r["updated_by"]),
         ))
     # Planned doses in the window that nobody logged.
     seen_cycles = {c["id"]: c for c in schedule.all_cycles(conn)}
@@ -116,6 +119,7 @@ def dose_rows(conn: sqlite3.Connection, start: date, end: date, now: datetime) -
 
 def symptom_rows(conn: sqlite3.Connection, start: date, end: date, fever_f: float) -> list[SymptomRow]:
     cache: dict = {}
+    people = profiles.by_id(conn)
     out = []
     for r in schedule.symptoms_between(conn, start, end):
         sym = sx.lookup(r["symptom"])
@@ -127,6 +131,7 @@ def symptom_rows(conn: sqlite3.Connection, start: date, end: date, fever_f: floa
             severity=sx.SEVERITY_NAMES.get(r["severity"], "") if r["severity"] is not None else "",
             reading=sym.describe(None, r["value"]) if r["value"] is not None else "",
             score=schedule.symptom_score(r, fever_f), notes=r["notes"] or "",
+            by=profiles.attribution(people, r["logged_by"], r["updated_by"]),
         ))
     return out
 
@@ -154,14 +159,14 @@ def doses_csv(conn: sqlite3.Connection, start: date, end: date, now: datetime) -
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["Date", "Time", "Planned time", "Cycle", "Day", "Medicine", "Strength", "Dose", "Type", "Status",
-                "Taken for", "Helped", "Dose felt", "Side effects", "Notes"])
+                "Taken for", "Helped", "Dose felt", "Side effects", "Notes", "Logged by"])
     for r in dose_rows(conn, start, end, now):
         w.writerow([
             r.when.date().isoformat() if r.when else "",
             r.when.strftime("%H:%M") if r.when and r.status == "Taken" and r.kind != "Clinic" else "",
             r.planned.strftime("%H:%M") if r.planned else "",
             r.cycle or "", "" if r.day is None else r.day, r.medicine, r.strength, r.dose, r.kind, r.status,
-            r.reason, r.helped, r.dose_feel, r.side_effects, r.notes,
+            r.reason, r.helped, r.dose_feel, r.side_effects, r.notes, r.by,
         ])
     return buf.getvalue().encode("utf-8-sig")
 
@@ -169,10 +174,10 @@ def doses_csv(conn: sqlite3.Connection, start: date, end: date, now: datetime) -
 def symptoms_csv(conn: sqlite3.Connection, start: date, end: date, fever_f: float) -> bytes:
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["Date", "Time", "Cycle", "Day", "Symptom", "Severity", "Reading", "Notes"])
+    w.writerow(["Date", "Time", "Cycle", "Day", "Symptom", "Severity", "Reading", "Notes", "Logged by"])
     for r in symptom_rows(conn, start, end, fever_f):
         w.writerow([r.when.date().isoformat(), r.when.strftime("%H:%M"), r.cycle or "",
-                    "" if r.day is None else r.day, r.symptom, r.severity, r.reading, r.notes])
+                    "" if r.day is None else r.day, r.symptom, r.severity, r.reading, r.notes, r.by])
     return buf.getvalue().encode("utf-8-sig")
 
 
@@ -304,6 +309,23 @@ def _summary(ws: Worksheet, conn, cfg, sub, doses: list[DoseRow], syms: list[Sym
     if not worst:
         row += 1
         ws.cell(row=row, column=1, value="No symptoms logged in this period.").font = Font(italic=True, color=MUTED)
+    by_person: dict[str, list[int]] = {}
+    for d in doses:
+        if d.status != "Not logged":
+            by_person.setdefault(d.by.split(" (edited")[0] or "Not recorded", [0, 0])[0] += 1
+    for s in syms:
+        by_person.setdefault(s.by.split(" (edited")[0] or "Not recorded", [0, 0])[1] += 1
+    if by_person:
+        row += 2
+        ws.cell(row=row, column=1, value="Who logged entries").font = Font(bold=True, size=12, color=INK)
+        row += 1
+        _header(ws, row, ["Person", "Doses", "Symptoms"])
+        for name, (nd, ns) in sorted(by_person.items(), key=lambda kv: -(kv[1][0] + kv[1][1])):
+            row += 1
+            for col, v in enumerate([name, nd, ns], start=1):
+                c = ws.cell(row=row, column=col, value=v)
+                c.border = BOX
+                c.alignment = WRAP if col == 1 else CENTER
     fevers = [s for s in syms if s.symptom == "Temperature" and s.reading and float(s.reading.split()[0]) >= fever]
     if fevers:
         row += 2
@@ -371,7 +393,7 @@ def _daily(ws: Worksheet, sub, start: date, end: date, doses, syms, fever, conn)
 def _dose_sheet(ws: Worksheet, sub, doses: list[DoseRow]) -> None:
     _title(ws, "Dose log", sub)
     head = ["Date", "Time taken", "Planned time", "Cycle", "Day", "Medicine", "Strength", "Dose", "Type", "Status",
-            "Taken for", "Helped", "Dose felt", "Side effects", "Notes"]
+            "Taken for", "Helped", "Dose felt", "Side effects", "Notes", "Logged by"]
     _header(ws, 4, head)
     row = 4
     for r in doses:
@@ -381,11 +403,11 @@ def _dose_sheet(ws: Worksheet, sub, doses: list[DoseRow]) -> None:
             r.when.strftime("%I:%M %p").lstrip("0") if r.when and r.status == "Taken" and r.kind != "Clinic" else "",
             r.planned.strftime("%I:%M %p").lstrip("0") if r.planned else "",
             r.cycle or "", "" if r.day is None else r.day, r.medicine, r.strength, r.dose, r.kind, r.status,
-            r.reason, r.helped, r.dose_feel, r.side_effects, r.notes,
+            r.reason, r.helped, r.dose_feel, r.side_effects, r.notes, r.by,
         ]
         for col, v in enumerate(values, start=1):
             c = ws.cell(row=row, column=col, value=v)
-            c.alignment = WRAP if col in (6, 11, 14, 15) else CENTER
+            c.alignment = WRAP if col in (6, 11, 14, 15, 16) else CENTER
         ws.cell(row=row, column=1).number_format = "ddd mmm d"
         ws.cell(row=row, column=10).fill = {"Taken": FILL_TAKEN, "Skipped": FILL_SKIP}.get(r.status, FILL_MISS)
         if r.dose_feel in ("Too strong", "Not enough"):
@@ -393,28 +415,28 @@ def _dose_sheet(ws: Worksheet, sub, doses: list[DoseRow]) -> None:
         if r.helped == "No":
             ws.cell(row=row, column=12).fill = FILL_SKIP
     _table(ws, "DoseLog", 4, row, len(head))
-    _widths(ws, [13, 11, 11, 7, 6, 28, 13, 16, 11, 11, 16, 10, 12, 24, 30])
+    _widths(ws, [13, 11, 11, 7, 6, 28, 13, 16, 11, 11, 16, 10, 12, 24, 30, 16])
     ws.freeze_panes = "A5"
     _print_setup(ws, 4)
 
 
 def _symptom_sheet(ws: Worksheet, sub, syms: list[SymptomRow]) -> None:
     _title(ws, "Symptoms", sub)
-    head = ["Date", "Time", "Cycle", "Day", "Symptom", "Severity", "Reading", "Notes"]
+    head = ["Date", "Time", "Cycle", "Day", "Symptom", "Severity", "Reading", "Notes", "Logged by"]
     _header(ws, 4, head)
     row = 4
     for s in syms:
         row += 1
         values = [s.when.date(), s.when.strftime("%I:%M %p").lstrip("0"), s.cycle or "",
-                  "" if s.day is None else s.day, s.symptom, s.severity, s.reading, s.notes]
+                  "" if s.day is None else s.day, s.symptom, s.severity, s.reading, s.notes, s.by]
         for col, v in enumerate(values, start=1):
             c = ws.cell(row=row, column=col, value=v)
-            c.alignment = WRAP if col in (5, 8) else CENTER
+            c.alignment = WRAP if col in (5, 8, 9) else CENTER
         ws.cell(row=row, column=1).number_format = "ddd mmm d"
         if s.score:
             ws.cell(row=row, column=6 if s.severity else 7).fill = FILL_SEV[s.score]
     _table(ws, "Symptoms", 4, row, len(head))
-    _widths(ws, [13, 10, 7, 6, 24, 11, 14, 44])
+    _widths(ws, [13, 10, 7, 6, 24, 11, 14, 44, 16])
     ws.freeze_panes = "A5"
     _print_setup(ws, 4)
 

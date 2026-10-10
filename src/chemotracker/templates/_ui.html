@@ -40,6 +40,7 @@
 {%- elif name == "arrow-right" -%}<path d="M5 12h14M12 5l7 7-7 7"/>
 {%- elif name == "arrow-left" -%}<path d="M19 12H5M12 19l-7-7 7-7"/>
 {%- elif name == "edit" -%}<path d="M12 20h9M16.38 3.62a1 1 0 0 1 3 3L7.37 18.64a2 2 0 0 1-.85.5l-2.87.84a.5.5 0 0 1-.62-.62l.84-2.87a2 2 0 0 1 .5-.85Z"/>
+{%- elif name == "users" -%}<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
 {%- elif name == "database" -%}<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5M3 12a9 3 0 0 0 18 0"/>
 {%- else -%}<circle cx="12" cy="12" r="4"/>
 {%- endif -%}
@@ -128,9 +129,22 @@
 
 {% macro sev_class(row, fever) -%}s{{ score(row, fever) }}{%- endmacro %}
 
-{% macro symptom_tag(row, fever) -%}
+{% macro avatar(p, cls="") -%}
+{%- if p -%}<span class="avatar {{ cls }}" style="--av: {{ p.color }}" aria-hidden="true">{{ initials(p.name) }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro by_tag(people, logged_by, updated_by=None) -%}
+{%- set who = people.get(logged_by) if logged_by else none -%}
+{%- set editor = people.get(updated_by) if updated_by else none -%}
+{%- if who or editor -%}
+<span class="by">{% if who %}{{ avatar(who, "avatar-xs") }}<span>{{ who.name }}</span>{% endif %}{% if editor and editor.id != (who.id if who else none) %}<span class="meta"> · edited by {{ editor.name }}</span>{% endif %}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro symptom_tag(row, fever, people) -%}
 {%- set sym = lookup_symptom(row.symptom) -%}
-<a class="sev-tag s{{ score(row, fever) }}" href="/symptoms/{{ row.id }}">{{ row.label if row.symptom == "other" else sym.name }} · {{ sym.describe(row.severity, row.value) }} <span class="meta">{{ fmt_time(row.logged_at) }}</span></a>
+{%- set who = people.get(row.logged_by) if row.logged_by else none -%}
+<a class="sev-tag s{{ score(row, fever) }}" href="/symptoms/{{ row.id }}">{{ row.label if row.symptom == "other" else sym.name }} · {{ sym.describe(row.severity, row.value) }} <span class="meta">{{ fmt_time(row.logged_at) }}{% if who %} · {{ who.name }}{% endif %}</span></a>
 {%- endmacro %}
 
 {% macro med_info(info, compact=False) -%}

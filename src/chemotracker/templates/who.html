@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Who's using this? · ChemoTracker{% endblock %}
+{% block content %}
+{% from "_ui.html" import icon, avatar %}
+<div class="page page-narrow">
+  <div class="page-head">
+    <div>
+      <h1>Who's using this?</h1>
+      <p class="sub">Doses and symptoms you log will show your name. This device remembers you until you switch.</p>
+    </div>
+  </div>
+  <div class="who-grid">
+    {% for p in people_list %}
+    <form method="post" action="/who">
+      <input type="hidden" name="profile_id" value="{{ p.id }}"><input type="hidden" name="next" value="{{ nxt }}">
+      <button class="who-btn {{ 'is-me' if me and me.id == p.id }}" type="submit">
+        {{ avatar(p, "avatar-lg") }}
+        <span class="n">{{ p.name }}</span>
+        <span class="meta">{{ roles[p.role] }}{% if me and me.id == p.id %} · current{% endif %}</span>
+      </button>
+    </form>
+    {% endfor %}
+  </div>
+  <p style="margin-top: var(--s6)"><a class="btn btn-secondary" href="/people">{{ icon("plus") }}Add someone</a></p>
+</div>
+{% endblock %}

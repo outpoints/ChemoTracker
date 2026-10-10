@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Symptoms · ChemoTracker{% endblock %}
 {% block content %}
-{% from "_ui.html" import icon, call_card %}
+{% from "_ui.html" import icon, call_card, by_tag %}
 <div class="page page-narrow">
   <div class="page-head">
     <div>
@@ -39,6 +39,7 @@
         <span class="dot s{{ score(row, fever_f) }}"></span>
         <div>
           <div class="what">{{ row.label if row.symptom == "other" else sym.name }} · {{ sym.describe(row.severity, row.value) }}</div>
+          {{ by_tag(people, row.logged_by, row.updated_by) }}
           {% if sym.kind == "severity" and row.severity %}<div class="note">{{ sym.levels[row.severity - 1] }}</div>{% endif %}
           {% if row.notes %}<div class="note">{{ row.notes }}</div>{% endif %}
         </div>
@@ -47,6 +48,7 @@
         <span class="dot is-dose"></span>
         <div>
           <div class="what">Took {{ row.med_name }}{% if row.dose %} <span class="meta">{{ row.dose }}</span>{% endif %}</div>
+          {{ by_tag(people, row.logged_by, row.updated_by) }}
           {% if row.helped %}<div class="note">Helped: {{ helped_names[row.helped] }}{% if row.dose_feel %} · Dose: {{ feel_names[row.dose_feel] | lower }}{% endif %}</div>{% endif %}
         </div>
         <a class="btn btn-quiet btn-sm" href="/dose/{{ row.id }}" aria-label="Edit">{{ icon("edit") }}</a>

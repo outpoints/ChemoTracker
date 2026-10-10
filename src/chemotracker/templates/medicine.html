@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ med.name }} · ChemoTracker{% endblock %}
 {% block content %}
-{% from "_ui.html" import icon, med_info %}
+{% from "_ui.html" import icon, med_info, by_tag %}
 <div class="page">
   <a class="btn btn-quiet" href="/medicines" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Medicines</a>
   <div class="page-head" style="margin-top: var(--s2)">
@@ -83,6 +83,7 @@
               <span class="dot {{ 'is-skip' if r.status == 'skipped' else 'is-dose' }}"></span>
               <div>
                 <div class="what">{{ fmt_rel(parse_local((r.taken_at or r.slot)[:10] ~ " 00:00").date(), today) }} · {{ "Taken" if r.status == "taken" else "Skipped" }}{% if r.dose %} <span class="meta">{{ r.dose }}</span>{% endif %}</div>
+                {{ by_tag(people, r.logged_by, r.updated_by) }}
                 {% if r.helped or r.dose_feel or r.side_effects %}<div class="note">{% if r.helped %}Helped: {{ helped_names[r.helped] }}{% endif %}{% if r.dose_feel %} · Dose {{ feel_names[r.dose_feel] | lower }}{% endif %}{% if r.side_effects %} · {{ r.side_effects }}{% endif %}</div>{% endif %}
               </div>
               <a class="btn btn-quiet btn-sm" href="/dose/{{ r.id }}" aria-label="Edit">{{ icon("edit") }}</a>

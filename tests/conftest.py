@@ -44,6 +44,9 @@ def setup_walkthrough(client, day1: date) -> None:
     """Drive the real first-run walkthrough with the label details from the family's prescriptions."""
     r = client.get("/", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/setup"
+    r = client.post("/setup/people", data={"names[]": ["John", "Jane"], "roles[0]": "patient", "roles[1]": "family",
+                                            "me": "new:0"}, follow_redirects=False)
+    assert r.headers["location"] == "/setup/medicines", r.text
     keys = ["doxorubicin", "cyclophosphamide", "paclitaxel", "ondansetron", "prochlorperazine", "dexamethasone",
             "olanzapine", "filgrastim"]
     r = client.post("/setup/medicines", data={"keys[]": keys}, follow_redirects=False)

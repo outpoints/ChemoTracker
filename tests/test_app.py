@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import openpyxl
 
-from chemotracker import backup, schedule, store
+from chemotracker import backup, profiles, schedule, store
 from chemotracker.db import session
 
 from .conftest import local_now, setup_walkthrough, today
@@ -256,7 +256,132 @@ def test_every_page_renders(client, cfg):
                 "/medicines/add", f"/medicines/{med_id}", "/cycles", f"/cycles/{cycle_id}", "/report",
                 "/report?cycle=&start=2026-01-01&end=2026-01-31", "/settings", "/setup", "/setup/medicines",
                 "/setup/label/0", "/setup/cycle", "/setup/team", f"/dose/{log}", f"/dose/new?med={med_id}",
-                "/manifest.webmanifest"]:
+                "/manifest.webmanifest", "/who", "/people", "/setup/people"]:
         r = client.get(url)
         assert r.status_code == 200, (url, r.text[:500])
     assert client.get("/medicines/9999").status_code == 404
+
+
+def test_entries_record_who_logged_them(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    with session(cfg.db_path) as conn:
+        people = {p["name"]: p["id"] for p in conn.execute("SELECT * FROM profiles")}
+        cycle = schedule.cycle_for_date(conn, today(cfg))
+        dex = next(s for s in schedule.slots(conn, cycle, 3) if s.plan["med_name"] == "Dexamethasone")
+    assert set(people) == {"John", "Jane"}
+    # John (this device) logs a dose.
+    client.post("/slot", data={"plan_id": dex.plan["id"], "slot": dex.key, "status": "taken", "back": "/"})
+    # Jane switches in on the same device, logs a symptom, and answers the dose follow-up.
+    r = client.post("/who", data={"profile_id": people["Jane"], "next": "/"}, follow_redirects=False)
+    assert r.status_code == 303
+    client.post("/symptoms/new", data={"symptom": "fatigue", "severity": "1"})
+    with session(cfg.db_path) as conn:
+        log = conn.execute("SELECT * FROM dose_logs WHERE plan_id = ?", (dex.plan["id"],)).fetchone()
+        sym = conn.execute("SELECT * FROM symptom_logs").fetchone()
+    assert log["logged_by"] == people["John"] and log["updated_by"] is None
+    assert sym["logged_by"] == people["Jane"]
+    client.post(f"/dose/{log['id']}/follow", data={"helped": "yes", "dose_feel": "right", "back": "/"})
+    with session(cfg.db_path) as conn:
+        log = store.dose_log(conn, log["id"])
+    assert log["logged_by"] == people["John"] and log["updated_by"] == people["Jane"]
+
+    page = client.get("/").text
+    assert 'class="by"' in page and "John" in page and "edited by Jane" in page
+    assert "Tired · Mild" in page and "Jane" in client.get("/symptoms").text
+
+    wb = openpyxl.load_workbook(io.BytesIO(client.get(f"/report.xlsx?cycle={cycle['id']}").content))
+    dl = wb["Dose log"]
+    assert dl.cell(row=4, column=16).value == "Logged by"
+    by_values = [dl.cell(row=i, column=16).value for i in range(5, dl.max_row + 1)]
+    assert "John (edited by Jane)" in by_values
+    sy = wb["Symptoms"]
+    assert sy.cell(row=4, column=9).value == "Logged by" and sy.cell(row=5, column=9).value == "Jane"
+    summary = [c.value for row in wb["Summary"].iter_rows() for c in row if c.value]
+    assert "Who logged entries" in summary
+    csv_text = client.get(f"/report-doses.csv?cycle={cycle['id']}").content.decode("utf-8-sig")
+    assert csv_text.splitlines()[0].endswith(",Logged by") and "John (edited by Jane)" in csv_text
+
+
+def test_new_device_is_asked_who_it_is(cfg):
+    from fastapi.testclient import TestClient
+
+    from chemotracker.web import create_app
+
+    app = create_app(cfg, start_scheduler=False)
+    with TestClient(app) as first:
+        setup_walkthrough(first, today(cfg))
+    with TestClient(app) as second:  # a different phone: no cookie yet
+        r = second.get("/symptoms", follow_redirects=False)
+        assert r.status_code == 303 and r.headers["location"].startswith("/who?next=%2Fsymptoms")
+        page = second.get("/who").text
+        assert "John" in page and "Jane" in page
+        with session(cfg.db_path) as conn:
+            jane = conn.execute("SELECT id FROM profiles WHERE name = 'Jane'").fetchone()["id"]
+        r = second.post("/who", data={"profile_id": jane, "next": "/symptoms"}, follow_redirects=False)
+        assert r.headers["location"] == "/symptoms"
+        assert second.get("/symptoms").status_code == 200
+        assert "Using as" in second.get("/").text
+
+
+def test_people_can_be_added_renamed_and_removed(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    client.post("/people", data={"name": "Sam", "role": "caregiver"})
+    r = client.post("/people", data={"name": "sam", "role": "family"}, follow_redirects=True)
+    assert "already someone called" in r.text
+    with session(cfg.db_path) as conn:
+        sam = conn.execute("SELECT * FROM profiles WHERE name = 'Sam'").fetchone()
+        med_id = conn.execute("SELECT id FROM medications LIMIT 1").fetchone()[0]
+    assert sam["role"] == "caregiver"
+    client.post("/who", data={"profile_id": sam["id"], "next": "/"})
+    client.post("/dose/quick", data={"medication_id": med_id, "back": "/"})
+    client.post(f"/people/{sam['id']}", data={"name": "Sam R", "role": "caregiver"})
+    client.post(f"/people/{sam['id']}/active", data={"active": "0"})
+    # Removed people keep their name on past entries, and this device must pick again.
+    with session(cfg.db_path) as conn:
+        assert profiles.name_of(profiles.by_id(conn), conn.execute(
+            "SELECT logged_by FROM dose_logs").fetchone()[0]) == "Sam R"
+    r = client.get("/", follow_redirects=False)
+    assert r.headers["location"].startswith("/who")
+    page = client.get("/people").text
+    assert "Removed" in page and "Sam R" in page
+
+
+def test_single_person_is_selected_automatically(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    with session(cfg.db_path) as conn:
+        jane = conn.execute("SELECT id FROM profiles WHERE name = 'Jane'").fetchone()["id"]
+        profiles.set_active(conn, jane, False)
+    client.cookies.clear()
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 200 and "John" in r.text
+
+
+def test_v1_database_upgrades_in_place(tmp_path):
+    import sqlite3
+
+    from chemotracker.db import MIGRATIONS, migrate
+
+    path = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.executescript(MIGRATIONS[0] + "\nPRAGMA user_version = 1;")
+    conn.execute("INSERT INTO medications (name, created_at, updated_at) VALUES ('X', 'now', 'now')")
+    conn.execute("INSERT INTO dose_logs (medication_id, status, taken_at, created_at, updated_at) "
+                 "VALUES (1, 'taken', '2026-01-01 08:00', 'now', 'now')")
+    conn.commit()
+    conn.close()
+    assert migrate(path) == len(MIGRATIONS)
+    conn = sqlite3.connect(path)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(dose_logs)")}
+    assert {"logged_by", "updated_by"} <= cols
+    assert conn.execute("SELECT logged_by FROM dose_logs").fetchone()[0] is None
+    conn.close()
+
+
+def test_install_without_people_prompts_to_add_them(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    with session(cfg.db_path) as conn:
+        conn.execute("UPDATE dose_logs SET logged_by = NULL")
+        conn.execute("DELETE FROM profiles")
+    client.cookies.clear()
+    page = client.get("/")
+    assert page.status_code == 200 and "Add who's using ChemoTracker" in page.text

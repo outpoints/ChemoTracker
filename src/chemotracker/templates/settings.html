@@ -19,6 +19,11 @@
   </form>
 
   <section class="card card-pad" style="margin-top: var(--s5)">
+    <div class="spread"><h2>People</h2><a class="btn btn-secondary btn-sm" href="/people">{{ icon("users") }}Manage</a></div>
+    <p class="meta" style="margin-top: var(--s2)">Everyone who logs doses or symptoms. Each entry shows who logged it.{% if me %} This device is set to <strong>{{ me.name }}</strong> (<a href="/who">switch</a>).{% endif %}</p>
+  </section>
+
+  <section class="card card-pad" style="margin-top: var(--s5)">
     <h2>Appearance</h2>
     <fieldset class="theme-pick" style="margin-top: var(--s3)">
       <legend class="visually-hidden">Theme</legend>

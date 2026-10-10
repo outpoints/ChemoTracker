@@ -90,6 +90,20 @@
     }
   });
 
+  // Setup: add another person row.
+  $$("[data-add-person]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const box = btn.closest("[data-people]");
+      const tpl = box.querySelector("[data-person-template]");
+      const i = $$("[data-person-row]", box).length;
+      const holder = document.createElement("div");
+      holder.innerHTML = tpl.innerHTML.replaceAll("__i__", String(i));
+      const row = holder.firstElementChild;
+      btn.before(row);
+      row.querySelector("input[type=text]").focus();
+    });
+  });
+
   // Count stepper.
   $$("[data-step]").forEach((btn) => {
     btn.addEventListener("click", () => {

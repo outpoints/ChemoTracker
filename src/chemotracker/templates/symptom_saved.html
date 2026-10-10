@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Saved · ChemoTracker{% endblock %}
 {% block content %}
-{% from "_ui.html" import icon, call_card, countdown %}
+{% from "_ui.html" import icon, call_card, countdown, by_tag %}
 <div class="page page-narrow stack">
   {% if concerning %}
   {% if sym.kind == "temp" %}
@@ -15,7 +15,7 @@
     <div class="row">
       {{ icon("check", "muted") }}
       <div class="grow">
-        <div class="meta">Saved at {{ fmt_time(entry.logged_at) }}</div>
+        <div class="meta">Saved at {{ fmt_time(entry.logged_at) }}{% if entry.logged_by %} · {{ by_tag(people, entry.logged_by, entry.updated_by) }}{% endif %}</div>
         <h1 style="font-size: var(--fs-lg)">{{ entry.label if entry.symptom == "other" else sym.name }} · {{ sym.describe(entry.severity, entry.value) }}</h1>
       </div>
       <a class="btn btn-quiet btn-sm" href="/symptoms/{{ entry.id }}">Edit</a>

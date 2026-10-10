@@ -1,13 +1,14 @@
 {% extends "base.html" %}
 {% block title %}How did it go? · ChemoTracker{% endblock %}
 {% block content %}
-{% from "_ui.html" import icon %}
+{% from "_ui.html" import icon, by_tag %}
 <div class="page page-narrow">
   <a class="btn btn-quiet" href="/" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Today</a>
   <div class="page-head" style="margin-top: var(--s2)">
     <div>
       <div class="eyebrow">{% if log.status == "taken" %}Taken {{ fmt_rel(parse_local(log.taken_at).date(), today) | lower }} at {{ fmt_time(log.taken_at) }}{% else %}Skipped{% endif %}</div>
       <h1>{{ log.med_name }}{% if log.med_strength %} <span class="muted" style="font-weight: 400">{{ log.med_strength }}</span>{% endif %}</h1>
+      {% if log.logged_by or log.updated_by %}<p class="sub">Logged by {{ by_tag(people, log.logged_by, log.updated_by) }}</p>{% endif %}
       {% if saved %}<p class="sub">Logged. Come back later to say how it went, or answer now.</p>{% endif %}
     </div>
   </div>
