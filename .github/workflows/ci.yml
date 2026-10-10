@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Personal information check (generic rules; the private list never leaves the owner's machine)
+        run: |
+          python3 scripts/check_pii.py --all
+          python3 scripts/check_pii.py --history
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.10.2"
+      - name: Tests
+        run: |
+          uv sync --frozen
+          uv run pytest -q

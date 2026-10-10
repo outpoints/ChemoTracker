@@ -119,9 +119,10 @@ The demo has three made-up people (John, Jane, Sam) and example doses. It refuse
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/). Read [CONTRIBUTING.md](CONTRIBUTING.md) first: **no personal information ever goes into this repo.**
 
 ```bash
+git config core.hooksPath .githooks          # blocks commits containing personal information
 uv sync
 uv run pytest
 CHEMO_DATA_DIR=./data uv run chemotracker     # http://127.0.0.1:8000

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks commits that contain personal information. See scripts/check_pii.py.
+# Enable once per clone:  git config core.hooksPath .githooks
+exec python3 "$(git rev-parse --show-toplevel)/scripts/check_pii.py" --staged

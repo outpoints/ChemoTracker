@@ -23,7 +23,7 @@ MEDICINES = {
     "doxorubicin": {"plan": {"kind": "clinic", "days": ["1"], "label": "Chemo infusion"}},
     "cyclophosphamide": {"plan": {"kind": "clinic", "days": ["1"], "label": "Chemo infusion"}},
     "palonosetron": {"plan": {"kind": "clinic", "days": ["1"], "label": "Before chemo"}},
-    "dexamethasone": {"strength": "4 mg tablet", "dose": "1 tablet", "directions": "Example: 1 tablet with breakfast",
+    "dexamethasone": {"strength": "6 mg tablet", "dose": "1 tablet", "directions": "Example: 1 tablet with breakfast",
                       "plan": {"kind": "scheduled", "days": ["2", "3"], "times": ["08:00"], "label": "With food"}},
     "olanzapine": {"strength": "2.5 mg tablet", "dose": "1 tablet", "directions": "Example: 1 tablet at bedtime",
                    "plan": {"kind": "scheduled", "days": ["1", "2", "3", "4"], "times": ["21:30"], "label": "At bedtime"}},
@@ -69,8 +69,8 @@ def main() -> None:
             store.update_plan(conn, store.plans(conn, med_id)[0]["id"], plan)
         store.create_cycle(conn, {"number": "1", "day1": (today - timedelta(days=args.day - 1)).isoformat(),
                                   "length_days": "14", "regimen": "Example: AC"})
-        put_settings(conn, {"clinic_name": "Example Cancer Center", "clinic_phone": "(555) 010-0100",
-                            "after_hours_phone": "(555) 010-0199", "fever_f": "100.4", "onboarded": "1"})
+        put_settings(conn, {"clinic_name": "Example Cancer Center", "clinic_phone": "555-0100",
+                            "after_hours_phone": "555-0199", "fever_f": "100.4", "onboarded": "1"})
 
         cycle = schedule.cycle_for_date(conn, today)
         assert cycle is not None

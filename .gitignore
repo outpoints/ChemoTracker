@@ -29,3 +29,24 @@ build/
 
 # Private decision log, design mockups, and notes (may reference real care details)
 .private/
+
+# AI assistant files stay local. The public repo carries only CONTRIBUTING.md.
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.claude/
+.codex/
+.cursor/
+.cursorrules
+.windsurf/
+.windsurfrules
+.aider*
+.continue/
+.gemini/
+.hermes/
+.interface-design/
+.impeccable/
+.github/copilot-instructions.md
+
+# Personal project notes
+IDEA.md
