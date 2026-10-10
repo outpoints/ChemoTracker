@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, backup, export, medinfo, profiles, schedule, store
+from . import __version__, backup, export, icons, medinfo, profiles, schedule, store
 from . import symptoms as sx
 from .config import PACKAGE_DIR, Settings, load_settings
 from .db import get_settings, migrate, put_settings, session
@@ -979,6 +979,7 @@ def _template_globals(templates: Jinja2Templates) -> None:
     env.filters["person_name"] = lambda pid, people: profiles.name_of(people, pid)
     env.globals.update(
         ring_points=ring_points,
+        icon_paths=icons.paths,
         initials=profiles.initials,
         roles=profiles.ROLES,
         short_wait=short_wait,

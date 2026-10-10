@@ -135,9 +135,9 @@
         </div>
         <div class="feel-grid">
           {% for s in quick %}
-          <a class="chip-btn {{ 'extra' if loop.index > 5 }}" href="/symptoms/new?s={{ s.key }}">{{ icon(s.icon) }}<span>{{ s.name }}</span></a>
+          <a class="chip-btn {{ 'extra' if loop.index > 5 }} {{ 'urgent' if s.urgent }}" href="/symptoms/new?s={{ s.key }}"><span class="chip-ico">{{ icon(s.icon) }}</span><span>{{ s.name }}</span></a>
           {% endfor %}
-          <a class="chip-btn" href="/symptoms#all">{{ icon("plus") }}<span>More</span></a>
+          <a class="chip-btn" href="/symptoms#all"><span class="chip-ico">{{ icon("plus") }}</span><span>More</span></a>
         </div>
         {% if feelings %}
         <div class="feel-recent" aria-label="Logged today">

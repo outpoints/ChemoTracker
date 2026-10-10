@@ -22,7 +22,7 @@
     <h2 id="log-h">What are you noticing?</h2>
     <div class="feel-grid">
       {% for s in all_symptoms %}
-      <a class="chip-btn" href="/symptoms/new?s={{ s.key }}">{{ icon(s.icon) }}<span>{{ s.name }}</span></a>
+      <a class="chip-btn {{ 'urgent' if s.urgent }}" href="/symptoms/new?s={{ s.key }}"><span class="chip-ico">{{ icon(s.icon) }}</span><span>{{ s.name }}</span></a>
       {% endfor %}
     </div>
   </section>
