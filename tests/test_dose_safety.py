@@ -206,3 +206,34 @@ def test_as_needed_doses_never_fill_a_scheduled_row(client, cfg):
         store.log_dose(conn, med, datetime.combine(y, datetime.min.time()).replace(hour=9), "1 tablet", None)
     with session(cfg.db_path) as conn:
         assert _slots(conn, cfg, y, "Prochlorperazine")[0].log is None
+
+
+def test_a_white_cell_booster_within_24_hours_after_chemo_asks_first(client, cfg):
+    # Filgrastim and pegfilgrastim labels: give them at least 24 hours after chemotherapy (Neupogen: "at least 24
+    # hours after"; Neulasta: not "between 14 days before and 24 hours after"). Only cytotoxic chemo starts that
+    # clock: antibody-only infusions like trastuzumab don't.
+    setup_walkthrough(client, today(cfg) - timedelta(days=3))  # Day 1 three days ago, Day 2 two days ago
+    d1, d2, d3 = (today(cfg) - timedelta(days=n) for n in (3, 2, 1))
+    with session(cfg.db_path) as conn:
+        dox, fil = _plan(conn, "Doxorubicin", "clinic"), _plan(conn, "Filgrastim")
+    r = client.post("/slot", data={"plan_id": dox["id"], "slot": d1.isoformat(), "status": "taken",
+                                   "taken_at": f"{d1}T16:00", "back": "/"}, follow_redirects=False)
+    assert r.status_code == 303
+    # Day 2's 3:00 PM shot would be 23 hours after chemo: ask first, with both times.
+    r = client.post("/slot", data={"plan_id": fil["id"], "slot": f"{d2} 15:00", "status": "taken",
+                                   "taken_at": f"{d2}T15:00", "back": "/"}, follow_redirects=False)
+    text = html.unescape(r.text)
+    assert r.status_code == 200 and "Check before you log this" in text and "Leave it as it is" in text
+    assert "at least 24 hours after chemo" in text and "Doxorubicin was logged yesterday at 4:00 PM, 23 hr before" in text
+    with session(cfg.db_path) as conn:
+        assert _taken(conn, "Filgrastim", d2) == []
+    # Given at 4:05 PM instead, 24 hours after chemo: logged without a question.
+    r = client.post("/slot", data={"plan_id": fil["id"], "slot": f"{d2} 15:00", "status": "taken",
+                                   "taken_at": f"{d2}T16:05", "back": "/"}, follow_redirects=False)
+    assert r.status_code == 303
+    # An antibody-only infusion two hours before Day 3's shot doesn't start the clock.
+    with session(cfg.db_path, write=True) as conn:
+        her = store.add_from_catalog(conn, "trastuzumab")
+        store.log_dose(conn, her, datetime.combine(d3, datetime.min.time()).replace(hour=13), None, None)
+        med = store.medication(conn, fil["medication_id"])
+        assert schedule.booster_warning(conn, med, datetime.combine(d3, datetime.min.time()).replace(hour=15)) is None
