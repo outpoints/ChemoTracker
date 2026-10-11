@@ -356,6 +356,9 @@ def test_fine_fall_back_night_does_not_repeat_the_1_30_reminder(db):
         store.create_cycle(conn, {"number": "3", "day1": "2026-10-26", "length_days": "14"})
     add_med(db, name="Example tablet", start=7, end=7, times=["01:30"])
     assert keys(tick(db, datetime(2026, 11, 1, 1, 30))) == ["due|2026-11-01 01:30"]
+    # Windows are real time now (F10): "Not marked yet" goes out 30 real minutes later, at 1:00 AM PST. The
+    # scheduler ticks every 30 seconds, so that pass happens before the second 1:30 comes round.
+    assert keys(tick(db, datetime(2026, 11, 1, 1, 0, fold=1))) == ["nag|2026-11-01 01:30"]
     assert keys(tick(db, datetime(2026, 11, 1, 1, 30, fold=1))) == []  # the second 1:30 AM (PST)
 
 

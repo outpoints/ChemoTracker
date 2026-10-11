@@ -9,7 +9,9 @@ A background thread checks once every 30 seconds for:
 - chemo: "Chemo tomorrow" at 6 PM the day before Day 1
 
 Each reminder has a key stored in `reminders_sent`, so a restart never repeats one, and
-a reminder older than CATCH_UP is dropped instead of arriving late in a burst.
+a reminder older than CATCH_UP is dropped instead of arriving late in a burst. Every window
+is measured in real time, so the nights the clocks change neither skip a dose nor send one early.
+The doses come from schedule.slots_on, the same list Today shows.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import sqlite3
 import threading
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta
 
 from . import schedule
@@ -44,6 +46,7 @@ class Reminder:
     tags: tuple[str, ...]
     priority: int = 4
     click: str | None = None
+    also: tuple[str, ...] = field(default_factory=tuple)  # more keys to record as sent (one per dose in a group)
 
 
 def new_topic() -> str:
@@ -63,15 +66,33 @@ def _int(value: str | None, default: int) -> int:
 
 
 def _slots_on(conn: sqlite3.Connection, d) -> list[schedule.Slot]:
-    """Every home dose with a set time on date `d`, across cycles (Day 0 belongs to the next cycle)."""
-    seen, out = set(), []
-    for cycle in (schedule.cycle_for_date(conn, d), schedule.next_cycle_after(conn, d),
-                  schedule.cycle_for_date(conn, d - timedelta(days=1))):
-        if cycle is None or cycle["id"] in seen:
-            continue
-        seen.add(cycle["id"])
-        out += [s for s in schedule.slots(conn, cycle) if s.date == d and s.kind == "scheduled" and s.time]
-    return out
+    """Every home dose with a set time on date `d`: the same doses Today shows, each once."""
+    return [s for s in schedule.slots_on(conn, d) if s.kind == "scheduled" and s.time]
+
+
+def _recent_note(conn: sqlite3.Connection, group: list[schedule.Slot], now: datetime, names: bool) -> str:
+    """A line about a dose of the same medicine logged shortly before, which isn't counted for this dose (a dose
+    logged a little early from "Log a dose" on a day it's also allowed as needed, for example)."""
+    lines = []
+    for s in group:
+        window = timedelta(hours=s.plan["med_gap"]) if s.plan["med_gap"] else timedelta(hours=2)
+        row = conn.execute(
+            """SELECT id, taken_at FROM dose_logs WHERE medication_id = ? AND status = 'taken' AND taken_at <= ?
+                AND taken_at >= ? ORDER BY taken_at DESC""",
+            (s.plan["medication_id"], schedule.fmt_local(now + schedule.AHEAD_OK),
+             schedule.fmt_local(s.dt - window - timedelta(hours=1))),
+        ).fetchall()
+        for r in row:
+            if schedule.paired_slot(conn, r["id"]) is not None:
+                continue
+            taken = schedule.parse_local(r["taken_at"])
+            if taken is None or schedule.real_diff(s.dt, taken) > window:
+                continue
+            day = "" if taken.date() == s.dt.date() else f"{schedule.fmt_relative_day(taken.date(), s.dt.date()).lower()} "
+            who = s.plan["med_name"] if names else "One of these medicines"
+            lines.append(f"{who} was logged {day}at {schedule.fmt_time(taken)}. Check before giving another dose.")
+            break
+    return "\n".join(dict.fromkeys(lines))
 
 
 def _what(slot: schedule.Slot) -> str:
@@ -80,19 +101,29 @@ def _what(slot: schedule.Slot) -> str:
 
 
 def due_reminders(conn: sqlite3.Connection, now: datetime, prefs: dict[str, str]) -> list[Reminder]:
-    """What should go out now. Pure: reads the database, sends nothing."""
+    """What should go out now. Pure: reads the database, sends nothing.
+
+    `now` is local wall-clock time; on the night the clocks go back, its `fold` says which 1:30 AM it is.
+    """
     names = prefs.get("ntfy_names", "1") == "1"
     lead = timedelta(minutes=_int(prefs.get("ntfy_lead"), 0))
     nag_after = _int(prefs.get("ntfy_nag"), 30)
     url = (prefs.get("app_url") or "").rstrip("/") or None
+    sent = {r[0] for r in conn.execute("SELECT key FROM reminders_sent")}  # keys carry their date
     out: list[Reminder] = []
-    slots = [s for d in (now.date() - timedelta(days=1), now.date()) for s in _slots_on(conn, d)]
+    # Tomorrow too: a dose just after midnight needs its prep step (or an early reminder) before midnight.
+    slots = [s for d in (now.date() - timedelta(days=1), now.date(), now.date() + timedelta(days=1))
+             for s in _slots_on(conn, d)]
     open_slots = [s for s in slots if s.log is None]
+
+    def since(at: datetime) -> timedelta:
+        """Real time from `at` until now (negative before it)."""
+        return schedule.real_diff(now, at)
 
     # Prep steps (each medicine on its own: different medicines need different things).
     for s in open_slots:
         at = s.prep_at
-        if at and at <= now < at + CATCH_UP and now < s.dt:
+        if at and timedelta(0) <= since(at) < CATCH_UP and since(s.dt) < timedelta(0):
             note = s.plan["med_prep_note"] or "Get it ready"
             title = f"{note}: {s.plan['med_name']}" if names else "Get a medicine ready"
             msg = (f"{note} now. The dose is at {schedule.fmt_time(s.dt)}." if names
@@ -105,22 +136,37 @@ def due_reminders(conn: sqlite3.Connection, now: datetime, prefs: dict[str, str]
         by_time.setdefault(s.dt, []).append(s)
     for at, group in sorted(by_time.items()):
         when = schedule.fmt_time(at)
-        nag_from = at + timedelta(minutes=nag_after) if nag_after else None
-        nag_now = nag_from is not None and nag_from <= now < nag_from + CATCH_UP
+        stamp = f"{at:%Y-%m-%d %H:%M}"
+        nag_now = bool(nag_after) and timedelta(minutes=nag_after) <= since(at) < timedelta(minutes=nag_after) + CATCH_UP
+        caveat = _recent_note(conn, group, now, names)
         # Once it's time for "not marked yet", a due reminder that never went out (server down) is skipped.
-        if at - lead <= now < at - lead + CATCH_UP and not nag_now:
-            if names:
-                title = f"{group[0].plan['med_name']} at {when}" if len(group) == 1 else f"{when} medicines"
-                msg = "\n".join(_what(s) for s in group) + "\nMark it in ChemoTracker once it's taken."
-            else:
-                title, msg = f"Medicine due at {when}", "Open ChemoTracker to see what's due and mark it taken."
-            out.append(Reminder(f"due|{at:%Y-%m-%d %H:%M}", title, msg, ("pill",), 4, url))
+        if -lead <= since(at) < CATCH_UP - lead and not nag_now:
+            members = _unsent(group, "due", stamp, sent)
+            if members:
+                key = f"due|{stamp}" if f"due|{stamp}" not in sent else \
+                    f"due|{stamp}|" + ",".join(str(s.plan["id"]) for s in members)
+                if names:
+                    title = f"{members[0].plan['med_name']} at {when}" if len(members) == 1 else f"{when} medicines"
+                    msg = "\n".join(_what(s) for s in members) + (f"\n{caveat}" if caveat else "") + \
+                        "\nMark it in ChemoTracker once it's taken."
+                else:
+                    title = f"Medicine due at {when}"
+                    msg = (f"{caveat}\n" if caveat else "") + "Open ChemoTracker to see what's due and mark it taken."
+                out.append(Reminder(key, title, msg, ("pill",), 4, url,
+                                    tuple(f"due|{stamp}|{s.plan['id']}" for s in members)))
         if nag_now:
-            title = f"Not marked yet: {when}"
-            msg = ((", ".join(s.plan["med_name"] for s in group) + " isn't marked taken or skipped yet. "
-                    "If it was taken, mark it so everyone knows.") if names
-                   else "A dose isn't marked taken or skipped yet. If it was taken, mark it so everyone knows.")
-            out.append(Reminder(f"nag|{at:%Y-%m-%d %H:%M}", title, msg, ("warning",), 3, url))
+            members = _unsent(group, "nag", stamp, sent)
+            if members:
+                key = f"nag|{stamp}" if f"nag|{stamp}" not in sent else \
+                    f"nag|{stamp}|" + ",".join(str(s.plan["id"]) for s in members)
+                title = f"Not marked yet: {when}"
+                msg = ((", ".join(s.plan["med_name"] for s in members) + " isn't marked taken or skipped yet. "
+                        "If it was taken, mark it so everyone knows.") if names
+                       else "A dose isn't marked taken or skipped yet. If it was taken, mark it so everyone knows.")
+                if caveat:
+                    msg += f"\n{caveat}"
+                out.append(Reminder(key, title, msg, ("warning",), 3, url,
+                                    tuple(f"nag|{stamp}|{s.plan['id']}" for s in members)))
 
     # Chemo tomorrow.
     if prefs.get("ntfy_chemo", "1") == "1" and now.time() >= CHEMO_EVE:
@@ -132,8 +178,25 @@ def due_reminders(conn: sqlite3.Connection, now: datetime, prefs: dict[str, str]
                    "or in the morning." if names else "Open ChemoTracker to see what's planned.")
             out.append(Reminder(f"chemo|{tomorrow.isoformat()}", title, msg, ("calendar",), 3, url))
 
-    sent = {r[0] for r in conn.execute("SELECT key FROM reminders_sent")}  # keys carry their date
-    return [r for r in out if r.key not in sent]
+    unique: dict[str, Reminder] = {}
+    for r in out:
+        if r.key not in sent:
+            unique.setdefault(r.key, r)
+    return list(unique.values())
+
+
+def _unsent(group: list[schedule.Slot], kind: str, stamp: str, sent: set[str]) -> list[schedule.Slot]:
+    """The doses in a group that this reminder hasn't covered yet.
+
+    The first reminder for a time covers every dose then and records one key per dose. A dose that joins that time
+    later (its schedule was moved onto it) gets its own reminder. Reminders sent before per-dose keys existed
+    covered the whole group.
+    """
+    if f"{kind}|{stamp}" not in sent:
+        return group
+    if not any(k.startswith(f"{kind}|{stamp}|") for k in sent):
+        return []
+    return [s for s in group if f"{kind}|{stamp}|{s.plan['id']}" not in sent]
 
 
 def send(prefs: dict[str, str], r: Reminder, timeout: float = 10) -> None:
@@ -220,7 +283,8 @@ class ReminderScheduler:
                 log.warning("reminder %s not sent: %s", r.key, exc)
                 break  # the server is probably down; try again next tick
             with session(self.settings.db_path, write=True) as conn:
-                conn.execute("INSERT OR IGNORE INTO reminders_sent (key, sent_at) VALUES (?, ?)", (r.key, utcnow()))
+                for key in (r.key, *r.also):
+                    conn.execute("INSERT OR IGNORE INTO reminders_sent (key, sent_at) VALUES (?, ?)", (key, utcnow()))
                 cutoff = (datetime.now(UTC) - timedelta(days=30)).replace(microsecond=0).isoformat()
                 conn.execute("DELETE FROM reminders_sent WHERE sent_at < ?", (cutoff,))
             self.last_sent, self.last_error = self.now(), None
