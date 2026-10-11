@@ -901,9 +901,12 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
 
     @app.post("/medicines/{med_id}/delete")
     async def remove_medicine(request: Request, med_id: int):
-        with db() as conn:
-            store.delete_medication(conn, med_id)
-        return go("/medicines", "Medicine and its history deleted.", request)
+        try:
+            with db() as conn:
+                store.delete_medication(conn, med_id)
+        except store.InvalidInput as exc:  # it has logged doses: they stay in the report
+            return go(f"/medicines/{med_id}", str(exc), request)
+        return go("/medicines", "Medicine deleted. It's still in the change history.", request)
 
     @app.post("/medicines/{med_id}/plans")
     async def add_plan(request: Request, med_id: int):

@@ -173,7 +173,7 @@
         <form method="post" action="/medicines/{{ med.id }}/active"><input type="hidden" name="active" value="1">
           <button class="btn btn-primary btn-block" type="submit">Start again</button></form>
         {% endif %}
-        <form method="post" action="/medicines/{{ med.id }}/delete" data-confirm="Delete {{ med.name }} and every dose logged for it? They stay in the change history, but can't be put back.">
+        <form method="post" action="/medicines/{{ med.id }}/delete" data-confirm="Delete {{ med.name }}? Only a medicine with no logged doses can be deleted. Its schedule goes with it.">
           <button class="btn btn-danger btn-quieter" type="submit">{{ icon("trash") }}Delete this medicine</button>
         </form>
       </div>

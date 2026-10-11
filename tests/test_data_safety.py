@@ -51,3 +51,22 @@ def test_formula_like_text_is_plain_text_on_every_sheet_and_in_both_csvs(client,
     assert "'=1+2" in fields and "'=2+3" in fields and "'\t=cmd" in fields
     assert not [f for f in fields if f and f[0] in "=+-@\t\r"]
     assert any(row[doses[0].index("Day")] == "2" for row in doses[1:])
+
+
+def _plan(conn, name):
+    return conn.execute("SELECT p.* FROM plans p JOIN medications m ON m.id = p.medication_id WHERE m.name = ?",
+                        (name,)).fetchone()
+
+
+def test_put_back_names_a_deleted_medicines_doses_by_their_own_name_in_the_report(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    y = today(cfg) - timedelta(days=1)
+    with session(cfg.db_path) as conn:
+        fil = _plan(conn, "Filgrastim")
+    client.post("/slot", data={"plan_id": fil["id"], "slot": f"{y} 15:00", "status": "taken", "taken_at": f"{y}T15:05",
+                               "back": "/"})
+    r = client.post(f"/medicines/{fil['medication_id']}/delete", follow_redirects=True)
+    assert "1 dose in the record" in html.unescape(r.text)
+    with session(cfg.db_path) as conn:
+        rows = export.dose_rows(conn, y, y, local_now(cfg))
+    assert [r.status for r in rows if r.medicine.startswith("Filgrastim")] == ["Taken"]

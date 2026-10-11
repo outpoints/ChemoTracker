@@ -145,6 +145,16 @@ def set_active(conn: sqlite3.Connection, med_id: int, active: bool) -> None:
 
 
 def delete_medication(conn: sqlite3.Connection, med_id: int) -> None:
+    """Delete a medicine added by mistake. One with logged doses is refused: deleting it would take doses that
+    were given (or skipped) out of the care team's report. Stopping it keeps them."""
+    row = conn.execute("""SELECT m.name, COUNT(dl.id) AS n FROM medications m
+                            LEFT JOIN dose_logs dl ON dl.medication_id = m.id WHERE m.id = ? GROUP BY m.id""",
+                       (med_id,)).fetchone()
+    if row is not None and row["n"]:
+        doses = "1 dose" if row["n"] == 1 else f"{row['n']} doses"
+        raise InvalidInput(f"{row['name']} has {doses} in the record, so it can't be deleted. The care team's report "
+                           "needs them. To take it off Today, use Stop this medicine. If a dose was logged by "
+                           "mistake, delete that dose first.")
     conn.execute("DELETE FROM medications WHERE id = ?", (med_id,))
 
 
