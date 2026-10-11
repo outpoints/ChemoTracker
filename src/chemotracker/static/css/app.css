@@ -536,7 +536,7 @@ a.lid:hover { border-color: color-mix(in srgb, var(--c-ink) 30%, transparent); c
 
 /* as-needed shelf: countdown ring, when it's OK, one button */
 .prn-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: var(--s1) var(--s3); align-items: start; padding: var(--s3) var(--s4); }
-.prn-row.future { grid-template-columns: minmax(0, 1fr); }
+.prn-row:is(.future, .past) { grid-template-columns: minmax(0, 1fr); }
 .prn-info { min-width: 0; }
 .prn-row .dose-name { font-size: var(--fs-base); }
 .prn-status { font-size: var(--fs-sm); color: var(--text-2); line-height: 1.3; margin-top: 2px; }

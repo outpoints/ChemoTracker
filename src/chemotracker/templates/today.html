@@ -10,7 +10,9 @@
     {%- for f in items %}
     <form class="follow" method="post" action="/dose/{{ f.id }}/follow">
       <input type="hidden" name="back" value="{{ back_ask }}">
-      <div class="q">How did the {{ f.med_name }} at {{ fmt_time(f.taken_at) }} go?</div>
+      <input type="hidden" name="seen" value="{{ dose_stamp(f) }}">
+      {%- set fd = parse_local(f.taken_at).date() %}
+      <div class="q">How did the {{ f.med_name }} {% if fd != today %}{{ fmt_rel(fd, today) | lower if (today - fd).days == 1 else "on " ~ fmt_day(fd) }} {% endif %}at {{ fmt_time(f.taken_at) }} go?</div>
       {% if f.logged_by and people.get(f.logged_by) %}<div class="meta">Logged by {{ people[f.logged_by].name }}</div>{% endif %}
       <div class="stack-sm">
         <div class="meta">Did it help?</div>
@@ -61,13 +63,14 @@
     <a class="btn btn-quiet btn-sm" href="/dose/{{ slot.log.id }}?back_to={{ back_url | urlencode }}">{{ "Edit notes" if slot.log.helped else "How did it go?" }}</a>
     {%- endif %}
     <form class="inline-form" method="post" action="/dose/{{ slot.log.id }}/undo">
-      <input type="hidden" name="back" value="{{ back_url }}">
+      <input type="hidden" name="back" value="{{ back_url }}"><input type="hidden" name="seen" value="{{ dose_stamp(slot.log) }}">
       <button class="btn btn-quiet btn-sm" type="submit">Undo</button>
     </form>
     {%- elif slot.date > now.date() %}
     {%- else %}
     <form method="post" action="/slot">
       <input type="hidden" name="plan_id" value="{{ p.id }}"><input type="hidden" name="slot" value="{{ slot.key }}">
+      <input type="hidden" name="medication_id" value="{{ p.medication_id }}">
       <input type="hidden" name="back" value="{{ back_url }}"><input type="hidden" name="status" value="taken">
       {%- set cls = 'btn-primary' if urgent else 'btn-secondary' %}
       {%- if slot.kind == "clinic" %}
@@ -86,6 +89,7 @@
     </form>
     <form method="post" action="/slot">
       <input type="hidden" name="plan_id" value="{{ p.id }}"><input type="hidden" name="slot" value="{{ slot.key }}">
+      <input type="hidden" name="medication_id" value="{{ p.medication_id }}">
       <input type="hidden" name="back" value="{{ back_url }}"><input type="hidden" name="status" value="skipped">
       <button class="btn btn-quiet btn-sm" type="submit">Skip</button>
     </form>
@@ -184,6 +188,15 @@
               <div class="prn-info">
                 <div class="dose-name"><a href="/medicines/{{ an.medication_id }}">{{ an.name }}</a></div>
                 <div class="dose-detail">Allowed this day. Log it on the day you take it.</div>
+              </div>
+            </div>
+            {% elif day < today %}
+            {#- An earlier day is a record: what was taken that day. Whether one is OK now belongs to Today. #}
+            <div class="prn-row past">
+              <div class="prn-info">
+                <div class="dose-name"><a href="/medicines/{{ an.medication_id }}">{{ an.name }}</a></div>
+                <div class="prn-status"><strong data-status>{% if an.day_doses %}Taken {{ an.day_doses | length }} {{ "time" if an.day_doses | length == 1 else "times" }} this day{% else %}None taken this day{% endif %}</strong> <span data-wait></span></div>
+                {%- if an.day_doses %}<div class="dose-detail">{% for x in an.day_doses %}{{ fmt_time(x.taken_at) }}{% if x.who %}, {{ x.who }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
               </div>
             </div>
             {% else %}

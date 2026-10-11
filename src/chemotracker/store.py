@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -412,11 +413,12 @@ def slot_log(conn: sqlite3.Connection, plan_id: int, slot: str) -> sqlite3.Row |
 
 
 def log_slot(conn: sqlite3.Connection, plan_row: sqlite3.Row, slot: str, status: str, taken_at: datetime | None,
-             dose: str | None, by: int | None = None, log_id: int | None = None) -> int:
+             dose: str | None, by: int | None = None, log_id: int | None = None, reason: str | None = None) -> int:
     """Record a planned dose. Idempotent per (plan, slot): a second tap updates instead of duplicating.
 
     `log_id` replaces a dose already counted for this slot under an older key (the schedule changed after it
-    was logged): that record is corrected and moved onto the slot, never duplicated.
+    was logged): that record is corrected and moved onto the slot, never duplicated. "Log a dose" uses this too
+    when the dose fills a planned dose, so the record says which planned dose it was (and its kind).
     """
     if status not in ("taken", "skipped"):
         raise InvalidInput("Unknown status.")
@@ -438,9 +440,11 @@ def log_slot(conn: sqlite3.Connection, plan_row: sqlite3.Row, slot: str, status:
         )
         return existing["id"]
     cur = conn.execute(
-        """INSERT INTO dose_logs (medication_id, plan_id, kind, slot, status, taken_at, dose, logged_by, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (plan_row["medication_id"], plan_row["id"], plan_row["kind"], slot, status, taken, dose, by, now, now),
+        """INSERT INTO dose_logs (medication_id, plan_id, kind, slot, status, taken_at, dose, reason, logged_by,
+                                  created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (plan_row["medication_id"], plan_row["id"], plan_row["kind"], slot, status, taken, dose, clean(reason), by,
+         now, now),
     )
     return rowid(cur)
 
@@ -464,7 +468,35 @@ def _first(value) -> str | None:
     return value or None
 
 
-def update_dose_log(conn: sqlite3.Connection, log_id: int, values: dict, fallback: datetime, by: int | None = None) -> None:
+# Every column of a dose record. A dose's stamp changes whenever anything about it does, or when its id is
+# reused by another dose, so a button from an older page can tell it is no longer acting on what it showed.
+DOSE_COLUMNS = ("id", "medication_id", "plan_id", "kind", "slot", "status", "taken_at", "dose", "reason", "helped",
+                "dose_feel", "side_effects", "notes", "logged_by", "updated_by", "created_at", "updated_at")
+
+
+def dose_stamp(row) -> str:
+    keys = row.keys()
+    raw = "|".join(str(row[c]) if c in keys else "" for c in DOSE_COLUMNS)
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def restore_dose(conn: sqlite3.Connection, log_id: int, snapshot: dict) -> None:
+    """Put a dose record back to an earlier version (Undo after "Replace it with mine")."""
+    plan_id = snapshot.get("plan_id")
+    if plan_id is not None and conn.execute("SELECT 1 FROM plans WHERE id = ?", (plan_id,)).fetchone() is None:
+        plan_id = None
+    cols = ("kind", "slot", "status", "taken_at", "dose", "reason", "helped", "dose_feel", "side_effects", "notes",
+            "updated_by")
+    conn.execute(
+        f"UPDATE dose_logs SET plan_id = ?, {', '.join(f'{c} = ?' for c in cols)}, updated_at = ? WHERE id = ?",
+        [plan_id, *(snapshot.get(c) for c in cols), utcnow(), log_id],
+    )
+
+
+def update_dose_log(conn: sqlite3.Connection, log_id: int, values: dict, fallback: datetime, by: int | None = None,
+                    rebind: tuple[int | None, str | None, str] | None = None) -> None:
+    """Save the dose page. `rebind` = (plan id, planned time, kind) when the dose now counts for another planned
+    dose (it was moved to another day), or (None, None, kind) when it fits none."""
     status = values.get("status") or "taken"
     if status not in ("taken", "skipped"):
         raise InvalidInput("Unknown status.")
@@ -487,6 +519,9 @@ def update_dose_log(conn: sqlite3.Connection, log_id: int, values: dict, fallbac
         (status, taken.strftime("%Y-%m-%d %H:%M") if taken else None, clean(values.get("dose")),
          clean(values.get("reason")), helped, feel, clean(effects), clean(values.get("notes")), utcnow(), by, log_id),
     )
+    if rebind is not None:
+        plan_id, slot, kind = rebind
+        conn.execute("UPDATE dose_logs SET plan_id = ?, slot = ?, kind = ? WHERE id = ?", (plan_id, slot, kind, log_id))
 
 
 def quick_follow_up(conn: sqlite3.Connection, log_id: int, helped: str | None, dose_feel: str | None,

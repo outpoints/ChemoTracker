@@ -49,8 +49,9 @@
         <ul class="day-list">
           {% for r, c in items %}
           <li>
-            <span class="dl-mark {{ 'taken' if c.taken else ('missing' if c.missing else ('skipped' if c.skipped else ('allowed' if r.kind == 'as_needed' else 'planned'))) }}">
-              {%- if c.taken %}{{ icon("check") }}{% elif c.missing %}{{ icon("triangle-alert") }}{% elif c.skipped %}{{ icon("minus") }}{% elif r.kind == "as_needed" %}{{ icon("pill") }}{% else %}{{ icon("clock") }}{% endif -%}
+            {#- A missed dose wins the mark even when another dose of the medicine was logged that day. #}
+            <span class="dl-mark {{ 'missing' if c.missing else ('taken' if c.taken else ('skipped' if c.skipped else ('allowed' if r.kind == 'as_needed' else 'planned'))) }}">
+              {%- if c.missing %}{{ icon("triangle-alert") }}{% elif c.taken %}{{ icon("check") }}{% elif c.skipped %}{{ icon("minus") }}{% elif r.kind == "as_needed" %}{{ icon("pill") }}{% else %}{{ icon("clock") }}{% endif -%}
             </span>
             <span class="grow">
               <a class="dl-name" href="/medicines/{{ r.medication_id }}">{{ r.name }}</a>
@@ -58,6 +59,7 @@
             </span>
             <span class="dl-status">
               {%- if c.taken %}{% for t in c.taken %}{{ ("Given " if r.kind == "clinic" else "") ~ (fmt_time(t.taken_at) if t.taken_at else ("" if r.kind == "clinic" else "Taken")) }}{% if not loop.last %}, {% endif %}{% endfor %}
+                {%- if c.missing %} · {{ c.missing }} of {{ c.planned }} not logged{% elif c.upcoming %} · {{ c.upcoming }} more planned{% endif %}
               {%- elif c.missing %}Not logged
               {%- elif c.skipped %}Skipped
               {%- elif r.kind == "as_needed" %}Not taken

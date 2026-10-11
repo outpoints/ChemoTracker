@@ -86,6 +86,7 @@
 
   {% if events %}<div>{{ history_card(events) }}</div>{% endif %}
   <form method="post" action="/dose/{{ log.id }}/delete" data-confirm="Remove this dose from the log?">
+    <input type="hidden" name="seen" value="{{ dose_stamp(log) }}">
     <input type="hidden" name="back" value="{{ back_url }}">
     <button class="btn btn-danger btn-block" type="submit">{{ icon("trash") }}Remove from log</button>
   </form>

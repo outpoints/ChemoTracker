@@ -5,10 +5,12 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import hmac
+import json
 import logging
 import re
 import io
 import sqlite3
+import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -361,18 +363,70 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             quick=[sx.BY_KEY[k] for k in sx.QUICK],
         )
 
+    def warn_hash(text: str) -> str:
+        """Names the warning a confirm page showed, so "Log it anyway" only confirms that warning."""
+        return hashlib.sha1(text.encode()).hexdigest()[:12]
+
+    def confirmed(data: dict[str, Any], warning: str) -> bool:
+        """True when this post answers exactly this warning. A page from before this version sends confirm=1."""
+        answer = str(data.get("confirm") or "")
+        return answer == "1" or (answer == "anyway" and data.get("warned") == warn_hash(warning))
+
+    def warning_fields(data: dict[str, Any], when: datetime, warning: str, drop=("when", "at_time", "ago", "pick_time")):
+        fields = {k: v for k, v in data.items() if k not in ("confirm", "warned", "replace_id", "replace_seen", *drop)}
+        fields["taken_at"] = when.strftime("%Y-%m-%dT%H:%M")  # the exact time, so answering later doesn't move it
+        fields["confirm"], fields["warned"] = "anyway", warn_hash(warning)
+        return fields
+
+    def remember_tap(request: Request, plan_id: int, key: str, status: str, log_id: int, stamp: str) -> None:
+        """This device's recent taps, so its own double tap is recognised (and another phone's tap never is)."""
+        taps = [t for t in request.session.get("taps", []) if time.time() - t[5] < 120][-9:]
+        taps.append([plan_id, key, status, log_id, stamp, time.time()])
+        request.session["taps"] = taps
+
+    def repeat_tap(request: Request, slot: schedule.Slot, status: str, existing: sqlite3.Row) -> bool:
+        stamp = store.dose_stamp(existing)
+        return any(t[0] == slot.plan["id"] and t[1] == slot.key and t[2] == status and t[3] == existing["id"]
+                   and t[4] == stamp and time.time() - t[5] < 120 for t in request.session.get("taps", []))
+
+    def last_event(conn: sqlite3.Connection, log_id: int) -> sqlite3.Row | None:
+        return conn.execute("SELECT * FROM history WHERE entity = 'dose' AND ref = ? ORDER BY id DESC LIMIT 1",
+                            (str(log_id),)).fetchone()
+
+    def logged_flash(text: str, conn: sqlite3.Connection, log_id: int, restore: int | None = None, **extra) -> dict:
+        row = store.dose_log(conn, log_id)
+        out = {"text": text, "undo": log_id, "undo_seen": store.dose_stamp(row) if row else "", **extra}
+        if restore:
+            out["undo_restore"] = restore
+        return out
+
+    def slot_name(slot: schedule.Slot) -> str:
+        return slot.plan["med_name"]
+
     @app.post("/slot")
     async def record_slot(request: Request):
         data = await form(request)
         current = now()
+        my_id = me(request)
+        moved_note = ""
         with db() as conn:
-            plan_row = store.plan(conn, int(data["plan_id"]))
-            if plan_row is None:
-                raise HTTPException(404)
-            slot = schedule.find_slot(conn, plan_row["id"], data["slot"])
+            pid = int(data["plan_id"]) if str(data.get("plan_id") or "").isdigit() else None
+            key = str(data.get("slot") or "")
+            slot = schedule.find_slot(conn, pid, key) if pid is not None else None
             if slot is None:
-                raise HTTPException(404, "That dose isn't on the schedule any more.")
-            status = data.get("status", "taken")
+                # A row from a page opened before the schedule changed. Never drop the tap: it means that plan's (or
+                # that medicine's) dose on the same day, wherever its time moved.
+                hint = int(data["medication_id"]) if str(data.get("medication_id") or "").isdigit() else None
+                slot = schedule.find_moved_slot(conn, pid, hint, key)
+                if slot is None:
+                    return go(back(data.get("back")), {
+                        "text": "That dose isn't on the schedule for that day any more, so nothing was logged. "
+                                "If it was given, log it with Log a dose so the record is right.",
+                        "link": "/dose/new", "link_text": "Log a dose"}, request)
+                if slot.time and key[11:16] != slot.time:
+                    moved_note = f" Its time changed to {schedule.fmt_time(slot.time)}, so this counts as that dose."
+            plan_row = slot.plan
+            status = data.get("status") if data.get("status") in ("taken", "skipped") else "taken"
             # Logging an earlier day's dose after the fact: default to its planned time, not "now".
             if slot.date == current.date():
                 default_time = current
@@ -382,125 +436,232 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 default_time = datetime.combine(slot.date, current.time())
             # "When was it taken?" from the Taken panel: just now or another clock time.
             choice = data.get("when")
+            word = "given" if plan_row["kind"] == "clinic" else "taken"
             if choice:
                 try:
                     taken_at = _chosen_time(choice, slot, data.get("at_time"), current)
                 except ValueError:
-                    word = "given" if plan_row["kind"] == "clinic" else "taken"
                     return go(back(data.get("back")), f"Pick the time it was {word}.", request)
-                if status == "taken" and taken_at > current + timedelta(minutes=5):
-                    return go(back(data.get("back")), "That time hasn't happened yet. Log it after it's taken.", request)
             else:
-                taken_at = store.parse_local_dt(data.get("taken_at"), default_time)
+                try:
+                    taken_at = store.parse_local_dt(data.get("taken_at"), default_time)
+                except store.InvalidInput:
+                    return go(back(data.get("back")), f"Pick the time it was {word}.", request)
+            if status == "taken" and taken_at > current + schedule.AHEAD_OK:
+                return go(back(data.get("back")), "That time hasn't happened yet. Log it after it's taken.", request)
             med = store.medication(conn, plan_row["medication_id"])
-            # The button is only shown for doses nobody has recorded. If there's an entry now, someone recorded it
-            # after this page loaded, or it was logged before the schedule changed: say so instead of adding another.
             existing = slot.log
-            my_id = me(request)
-            # Only the exact same row counts as a double tap. A dose matched across a schedule change is a
-            # different row, so it always says "Already recorded".
-            repeat_tap = existing is not None and existing["status"] == status \
-                and existing["plan_id"] == plan_row["id"] and existing["slot"] == slot.key \
-                and (existing["updated_by"] or existing["logged_by"]) == my_id \
-                and datetime.now(cfg.tz) - datetime.fromisoformat(existing["updated_at"]) < timedelta(minutes=2)
-            if existing and repeat_tap:
-                # The same person's double tap. The browser shows this second response, so it reads
-                # exactly like the first one did, and nothing changes.
+            answer = str(data.get("confirm") or "")
+            restore = None
+            replaced = False
+            if existing is not None and repeat_tap(request, slot, status, existing):
+                # This device's double tap. The browser shows this second response, so it reads exactly like the
+                # first one did, and nothing changes.
                 log_id = existing["id"]
                 taken_at = schedule.parse_local(existing["taken_at"]) or taken_at
-            elif existing and data.get("confirm") != "1" and med is not None:
+            elif existing is not None and (answer == "1" or (
+                    answer == "replace" and data.get("replace_id") == str(existing["id"])
+                    and data.get("replace_seen") == store.dose_stamp(existing))):
+                # "Replace it with mine", answering the entry the page showed (confirm=1: a page from before).
+                before = conn.execute("SELECT COALESCE(MAX(id), 0) FROM history").fetchone()[0]
+                log_id = store.log_slot(conn, plan_row, slot.key, status, taken_at, slot.dose or None, by=my_id,
+                                        log_id=existing["id"])
+                ev = conn.execute("""SELECT MAX(id) FROM history WHERE entity = 'dose' AND ref = ? AND action = 'changed'
+                                       AND id > ?""", (str(log_id), before)).fetchone()[0]
+                restore = ev or None
+                replaced = True
+            elif existing is not None and med is not None:
+                # Someone recorded it after this page loaded (or before the schedule changed), or a warning page was
+                # left open while it was logged. Show what's there. Only "Replace it with mine" changes it, and
+                # only the entry shown here.
+                fields = {k: v for k, v in data.items()
+                          if k not in ("confirm", "warned", "when", "at_time", "replace_id", "replace_seen")}
+                fields.update({"plan_id": str(plan_row["id"]), "slot": slot.key,
+                               "taken_at": taken_at.strftime("%Y-%m-%dT%H:%M"), "confirm": "replace",
+                               "replace_id": str(existing["id"]), "replace_seen": store.dose_stamp(existing)})
                 return render(request, "dose_confirm.html", status_code=409, active="today", med=med,
                               title="Already recorded", when=taken_at, back_url=back(data.get("back")),
                               warning=_already_text(existing, med, my_id),
-                              action="/slot", fields={k: v for k, v in data.items() if k != "confirm"},
+                              action="/slot", fields=fields,
                               lead="You tapped", cancel_label="Leave it as it is", cancel_primary=True,
                               confirm_label="Replace it with mine",
                               note="Only replace it if the entry above is wrong. Don't give a second dose unless "
                                    "your care team says to.")
-            elif existing:
-                log_id = store.log_slot(conn, plan_row, slot.key, status, taken_at, slot.dose or None, by=my_id,
-                                        log_id=existing["id"])
             else:
                 warning = schedule.dose_warning(conn, med, taken_at, by=my_id, slot=slot, now=current) \
-                    if (status == "taken" and med is not None and data.get("confirm") != "1") else None
-                if warning:
-                    # Resubmit the exact time, so answering later doesn't move it.
-                    fields = {k: v for k, v in data.items() if k not in ("confirm", "when", "at_time")}
-                    fields["taken_at"] = taken_at.strftime("%Y-%m-%dT%H:%M")
+                    if (status == "taken" and med is not None) else None
+                if warning and not confirmed(data, warning):
+                    fields = warning_fields(data, taken_at, warning)
+                    fields.update({"plan_id": str(plan_row["id"]), "slot": slot.key})
                     return render(request, "dose_confirm.html", active="today", med=med, warning=warning, when=taken_at,
                                   action="/slot", fields=fields, back_url=back(data.get("back")), lead="You tapped",
                                   cancel_label="Leave it as it is", cancel_primary=True, confirm_label="Log it anyway",
                                   note="Only log it if this is a separate dose. Don't give another dose unless the "
                                        "label or your care team says to.")
                 log_id = store.log_slot(conn, plan_row, slot.key, status, taken_at, slot.dose or None, by=my_id)
-        name = med["name"] if med else "Dose"
-        msg = (
-            {"text": f"{name} marked {'given' if plan_row['kind'] == 'clinic' else 'taken'} at {schedule.fmt_time(taken_at)}.",
-             "undo": log_id, "logged": [log_id]}
-            if status == "taken" else {"text": f"{name} marked skipped.", "undo": log_id}
-        )
+            row = store.dose_log(conn, log_id)
+            if row is not None:
+                remember_tap(request, plan_row["id"], slot.key, status, log_id, store.dose_stamp(row))
+            name = med["name"] if med else "Dose"
+            if status == "taken":
+                text = f"{name} marked {'given' if plan_row['kind'] == 'clinic' else 'taken'} at {schedule.fmt_time(taken_at)}."
+                msg = logged_flash(text + moved_note, conn, log_id, restore, logged=[log_id])
+            else:
+                msg = logged_flash(f"{name} marked skipped.{moved_note}", conn, log_id, restore)
+            if replaced and restore is None:
+                msg.pop("undo", None)  # the replace changed nothing, so Undo must not remove the entry
         return go(back(data.get("back")), msg, request)
 
     @app.post("/slots/taken")
     async def record_slots(request: Request):
-        """"Took all" in a compartment: every open home dose that's due or past, at one chosen time."""
+        """"Took all" in a compartment: every open home dose that's due or past, at one chosen time.
+
+        Each dose is written before the next one is checked, so two doses of one medicine are never logged at the
+        same minute without asking. A dose whose schedule changed after the page loaded counts for its new time,
+        and a dose that's no longer planned that day is named in the message, never dropped silently.
+        """
         data = await form(request)
         current = now()
-        picked: list[tuple[sqlite3.Row, schedule.Slot, datetime]] = []
-        already = 0
-        left_out: list[str] = []
+        my_id = me(request)
+        ids: list[int] = []
+        times: list[datetime] = []
+        names: list[str] = []
+        mine, theirs, left_out, moved, gone = 0, [], [], [], []
         with db() as conn:
             for item in _as_list(data.get("slots")):
                 pid, _, key = item.partition("|")
                 if not pid.isdigit():
                     continue
-                plan_row = store.plan(conn, int(pid))
-                slot = schedule.find_slot(conn, int(pid), key) if plan_row else None
-                if slot is None or plan_row["kind"] == "clinic":
+                slot = schedule.find_slot(conn, int(pid), key)
+                if slot is None:
+                    slot = schedule.find_moved_slot(conn, int(pid), None, key)
+                    if slot is None:
+                        old = store.plan(conn, int(pid))
+                        old_med = store.medication(conn, old["medication_id"]) if old is not None else None
+                        gone.append(old_med["name"] if old_med is not None else "One dose")
+                        continue
+                    if slot.time and key[11:16] != slot.time:
+                        moved.append(f"{slot_name(slot)}'s time changed to {schedule.fmt_time(slot.time)}")
+                if slot.kind == "clinic":
                     continue
                 if slot.log is not None:
-                    already += 1  # someone logged it since the page loaded: leave theirs
-                    continue
+                    if my_id is not None and (slot.log["updated_by"] or slot.log["logged_by"]) == my_id:
+                        mine += 1
+                    else:
+                        theirs.append(slot.log["who"] if "who" in slot.log.keys() and slot.log["who"] else "")
+                    continue  # logged since the page loaded: leave it as it is
                 try:
                     when = _chosen_time(data.get("when") or "now", slot, data.get("at_time"), current)
                 except ValueError:
                     return go(back(data.get("back")), "Pick the time they were taken.", request)
-                if when > current + timedelta(minutes=5):
+                if when > current + schedule.AHEAD_OK:
                     return go(back(data.get("back")), "That time hasn't happened yet. Log them after they're taken.", request)
-                med = store.medication(conn, plan_row["medication_id"])
-                if med is not None and schedule.dose_warning(conn, med, when, by=me(request), slot=slot, now=current):
-                    left_out.append(plan_row["med_name"] if "med_name" in plan_row.keys() else med["name"])
-                    continue  # it may already be given: its own Taken explains and asks
-                picked.append((plan_row, slot, when))
-            ids = [store.log_slot(conn, p, s.key, "taken", w, s.dose or None, by=me(request)) for p, s, w in picked]
-        skipped_note = (f" {' and '.join(left_out)} left out: it may already be logged. Use its own Taken to check."
-                        if left_out else "")
+                med = store.medication(conn, slot.plan["medication_id"])
+                if med is not None and schedule.dose_warning(conn, med, when, by=my_id, slot=slot, now=current):
+                    left_out.append(slot_name(slot))
+                    continue  # it may already be given (or be a second dose of one medicine): its own Taken asks
+                ids.append(store.log_slot(conn, slot.plan, slot.key, "taken", when, slot.dose or None, by=my_id))
+                times.append(when)
+                names.append(slot_name(slot))
+            stamps = [store.dose_stamp(store.dose_log(conn, i)) for i in ids]
+        notes = ""
+        if moved:
+            notes += " " + ". ".join(moved) + ", so it counts as that dose."
+        if left_out:
+            notes += f" {' and '.join(dict.fromkeys(left_out))} left out: it may already be logged. Use its own Taken to check."
+        if gone:
+            notes += (f" {' and '.join(gone)} not logged: not on the schedule that day any more. "
+                      "If it was given, log it with Log a dose.")
+        already = ""
+        if mine:
+            already += f" {mine} {'was' if mine == 1 else 'were'} already logged by you."
+        if theirs:
+            known = [n for n in theirs if n]
+            who = known[0] if known and len(set(known)) == 1 and len(known) == len(theirs) else "someone else"
+            already += f" {len(theirs)} already logged by {who}."
         if not ids:
-            text = ("They were already logged." if already else "Nothing logged.") + skipped_note
+            text = ("They were already logged." if (mine or theirs) else "Nothing logged.") + notes
             return go(back(data.get("back")), text, request)
-        times = {w for _, _, w in picked}
-        at = f"at {schedule.fmt_time(next(iter(times)))}" if len(times) == 1 else "at their planned times"
-        text = f"{len(ids)} doses marked taken {at}." if len(ids) > 1 else f"{picked[0][1].plan['med_name']} marked taken {at}."
-        if already:
-            text += f" {already} already logged by someone else."
-        text += skipped_note
-        return go(back(data.get("back")), {"text": text, "undo_many": ids, "logged": ids}, request)
+        at = f"at {schedule.fmt_time(times[0])}" if len(set(times)) == 1 else "at their planned times"
+        text = f"{len(ids)} doses marked taken {at}." if len(ids) > 1 else f"{names[0]} marked taken {at}."
+        return go(back(data.get("back")), {"text": text + already + notes, "undo_many": ids, "undo_seen_many": stamps,
+                                           "logged": ids}, request)
+
+    def undo_one(conn: sqlite3.Connection, request: Request, log_id: int, seen: str | None,
+                 restore: str | None) -> str | None:
+        """Undo one logged dose. Returns None when done, else the reason it was left as it is.
+
+        A button carries the dose's stamp: if anything about the dose changed since the button was shown
+        (someone else corrected it, or its id now belongs to another dose), nothing happens. Without a stamp
+        (a page from before), only the person who made the last change can undo it. Undo after "Replace it with
+        mine" puts the earlier entry back instead of deleting the dose.
+        """
+        row = store.dose_log(conn, log_id)
+        if row is None:
+            return "gone"
+        my_id = me(request)
+        if seen:
+            if seen != store.dose_stamp(row):
+                return "changed"
+        else:
+            ev = last_event(conn, log_id)
+            if ev is not None and ev["actor"] != my_id:
+                return "changed"
+            if ev is None and (row["updated_by"] or row["logged_by"]) != my_id:
+                return "changed"
+            if ev is not None and ev["action"] == "changed" and not restore:
+                restore = str(ev["id"])
+        if restore and str(restore).isdigit():
+            ev = conn.execute("""SELECT * FROM history WHERE id = ? AND entity = 'dose' AND ref = ? AND action = 'changed'""",
+                              (int(restore), str(log_id))).fetchone()
+            if ev is not None and ev["before"]:
+                try:
+                    store.restore_dose(conn, log_id, json.loads(ev["before"]))
+                except sqlite3.IntegrityError:
+                    return "changed"
+                return None
+        store.delete_dose_log(conn, log_id)
+        return None
+
+    def undo_refused(conn: sqlite3.Connection, log_id: int) -> dict:
+        row = store.dose_log(conn, log_id)
+        if row is None:
+            return {"text": "That dose was already removed."}
+        when = schedule.parse_local(row["taken_at"])
+        what = f"{row['med_name']} {'taken' if row['status'] == 'taken' else 'skipped'}" + \
+            (f" at {schedule.fmt_time(when)}" if when else "")
+        person = profiles.get(conn, row["updated_by"] or row["logged_by"]) if (row["updated_by"] or row["logged_by"]) else None
+        who = f", by {person['name']}" if person else ""
+        return {"text": f"That dose changed after this Undo was shown, so it was left as it is. It now says {what}{who}.",
+                "link": f"/dose/{log_id}", "link_text": "Check it"}
 
     @app.post("/doses/undo")
     async def undo_doses(request: Request):
         data = await form(request)
+        ids = [int(x) for x in _as_list(data.get("ids")) if str(x).isdigit()]
+        seens = _as_list(data.get("seen"))
+        kept, refused = 0, None
         with db() as conn:
-            for log_id in _as_list(data.get("ids")):
-                if str(log_id).isdigit():
-                    store.delete_dose_log(conn, int(log_id))
+            for i, log_id in enumerate(ids):
+                why = undo_one(conn, request, log_id, seens[i] if i < len(seens) else None, None)
+                if why == "changed":
+                    kept += 1
+                    refused = refused or undo_refused(conn, log_id)
+        if kept and kept == len(ids) and refused:
+            return go(back(data.get("back")), refused, request)
+        if kept:
+            return go(back(data.get("back")), f"Undone. {kept} {'dose was' if kept == 1 else 'doses were'} changed after "
+                                              "this Undo was shown, so they were left as they are.", request)
         return go(back(data.get("back")), "Undone.", request)
 
     @app.post("/dose/{log_id}/undo")
     async def undo_dose(request: Request, log_id: int):
         data = await form(request)
         with db() as conn:
-            store.delete_dose_log(conn, log_id)
-        return go(back(data.get("back")), "Undone.", request)
+            why = undo_one(conn, request, log_id, data.get("seen") or None, data.get("restore") or None)
+            if why == "changed":
+                return go(back(data.get("back")), undo_refused(conn, log_id), request)
+        return go(back(data.get("back")), "That dose was already removed." if why == "gone" else "Undone.", request)
 
     @app.post("/dose/quick")
     async def quick_dose(request: Request):
@@ -514,24 +675,22 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 when = dose_time(data, current) if (data.get("ago") or data.get("taken_at")) else current
             except store.InvalidInput as exc:
                 return go(back(data.get("back")), str(exc), request)
-            if when > current + timedelta(minutes=5):
+            if when > current + schedule.AHEAD_OK:
                 return go(back(data.get("back")), "That time hasn't happened yet. Log it after you take it.", request)
+            # Checked again when "Log it anyway" comes back, so a second tap or a dose logged since is never let through.
             warning = schedule.dose_warning(conn, med, when, by=me(request), now=current)
-            if warning and data.get("confirm") != "1":
-                # Resubmit the exact time, not "minutes ago", so a slow answer doesn't move it.
-                fields = {k: v for k, v in data.items() if k not in ("confirm", "ago", "pick_time")}
-                fields["taken_at"] = when.strftime("%Y-%m-%dT%H:%M")
+            if warning and not confirmed(data, warning):
                 return render(request, "dose_confirm.html", active="today", med=med, warning=warning,
                               cancel_label="Leave it as it is", cancel_primary=True, confirm_label="Log it anyway",
-                              action="/dose/quick", fields=fields, when=when, back_url=back(data.get("back")))
-            log_id = store.log_dose(conn, med["id"], when, med["dose"], data.get("reason"),
-                                    int(data["plan_id"]) if data.get("plan_id") else None, by=me(request))
-        day = "" if when.date() == current.date() else (" yesterday" if (current.date() - when.date()).days == 1
-                                                        else f" on {schedule.fmt_day(when.date())}")
-        return go(back(data.get("back")),
-                  {"text": f"{med['name']} logged at {schedule.fmt_time(when)}{day}.", "undo": log_id, "follow": log_id,
-                   "logged": [log_id]},
-                  request)
+                              action="/dose/quick", fields=warning_fields(data, when, warning), when=when,
+                              back_url=back(data.get("back")))
+            plan_id = int(data["plan_id"]) if str(data.get("plan_id") or "").isdigit() else None
+            if plan_id is not None and (store.plan(conn, plan_id) is None or store.plan(conn, plan_id)["kind"] != "as_needed"):
+                plan_id = None
+            log_id = store.log_dose(conn, med["id"], when, med["dose"], data.get("reason"), plan_id, by=me(request))
+            msg = logged_flash(f"{med['name']} logged at {schedule.fmt_time(when)}{_day_words(when, current)}.", conn,
+                               log_id, follow=log_id, logged=[log_id])
+        return go(back(data.get("back")), msg, request)
 
     def log_dose_context(conn: sqlite3.Connection, current: datetime) -> dict[str, Any]:
         """Everything the "Log a dose" screen needs for every active medicine, so changing the medicine
@@ -559,7 +718,12 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         return {"an": schedule._as_needed_row(conn, m, None, current), "is_prn": is_prn, "reason_tags": tags[:4]}
 
     def dose_time(data: dict[str, Any], current: datetime) -> datetime:
-        """The time from "When was it taken?": minutes ago, a picked clock time, or a full date and time."""
+        """The time from "When was it taken?": minutes ago, a picked clock time, or a full date and time.
+
+        A picked clock time later than now is last evening's dose only when it's morning now and the time is in
+        the evening (an 11 PM dose logged at 1 AM). Any other time later than now hasn't happened yet: it is
+        refused, never quietly moved to yesterday (a slip of the time wheel would hide the dose from the gap).
+        """
         ago = str(data.get("ago") or "")
         if ago.isdigit():
             return current - timedelta(minutes=int(ago))
@@ -569,8 +733,11 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 when = current.replace(hour=hh, minute=mm, second=0, microsecond=0)
             except ValueError:
                 raise store.InvalidInput("Pick the time it was taken.") from None
-            # A time later than now means last night (logging an 11 PM dose at 1 AM).
-            return when - timedelta(days=1) if when > current + timedelta(minutes=5) else when
+            if when > current + schedule.AHEAD_OK:
+                if current.hour < 12 and hh >= 17:
+                    return when - timedelta(days=1)
+                raise store.InvalidInput("That time hasn't happened yet. Pick the time it was taken.")
+            return when
         return store.parse_local_dt(data.get("taken_at"), current)
 
     def dose_reason(data: dict[str, Any]) -> str | None:
@@ -601,16 +768,26 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 when = dose_time(data, current)
             except store.InvalidInput as exc:
                 return JSONResponse({"error": str(exc)})
-            if when > current + timedelta(minutes=5):
+            if when > current + schedule.AHEAD_OK:
                 return JSONResponse({"error": "That time hasn't happened yet. Log a dose after you take it."})
             warning = schedule.dose_warning(conn, m, when, by=me(request), now=current,
                                             unplanned_ok=data.get("clinic_ok") == "1")
         return JSONResponse({"warning": warning, "when": when.strftime("%Y-%m-%dT%H:%M")})
 
+    def skipped_slot(conn: sqlite3.Connection, med_id: int, when: datetime) -> schedule.Slot | None:
+        """A planned dose of this medicine marked skipped that day, already due at `when`: a dose logged later
+        is most likely that dose, given late."""
+        for s in schedule.slots_on(conn, when.date()):
+            if s.plan["medication_id"] == med_id and s.log is not None and s.log["status"] == "skipped" \
+                    and schedule.real_diff(s.dt, when) <= schedule.DUE_BEFORE:
+                return s
+        return None
+
     @app.post("/dose/new")
     async def create_dose(request: Request):
         data = await form(request)
         current = now()
+        my_id = me(request)
         with db() as conn:
             if not str(data.get("medication_id") or "").isdigit():
                 return render(request, "dose_new.html", status_code=400, active="today", error="Pick the medicine first.",
@@ -619,36 +796,77 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             if m is None:
                 raise HTTPException(404)
             reason = dose_reason(data)
+            answer = str(data.get("confirm") or "")
             try:
                 when = dose_time(data, current)
-                if when > current + timedelta(minutes=5):
+                if when > current + schedule.AHEAD_OK:
                     raise store.InvalidInput("That time hasn't happened yet. Log a dose after you take it.")
+                base = {"medication_id": str(m["id"]), "taken_at": when.strftime("%Y-%m-%dT%H:%M"),
+                        "dose": data.get("dose") or "", "reason_text": reason or "", "back": data.get("back") or "/"}
+                if data.get("clinic_ok") == "1":
+                    base["clinic_ok"] = "1"
                 # A clinic medicine on a day it isn't given: the pop-up asked already (clinic_ok). Without scripts, ask here.
                 note = _clinic_note(conn, m, store.plans(conn, m["id"]), when.date())
-                if note and data.get("clinic_ok") != "1" and data.get("confirm") != "1":
-                    fields = {"medication_id": str(m["id"]), "taken_at": when.strftime("%Y-%m-%dT%H:%M"), "clinic_ok": "1",
-                              "dose": data.get("dose") or "", "reason_text": reason or "", "back": data.get("back") or "/"}
+                if note and data.get("clinic_ok") != "1" and answer != "1":
                     return render(request, "dose_confirm.html", active="today", med=m, warning=note, when=when,
-                                  title="Given at the clinic", action="/dose/new", fields=fields, back_url="/dose/new",
-                                  cancel_label="Pick another medicine", cancel_primary=True, confirm_label="Log it anyway",
-                                  note="Only log it here if it was given and nobody has logged it yet.")
-                warning = schedule.dose_warning(conn, m, when, by=me(request), now=current,
-                                                unplanned_ok=data.get("clinic_ok") == "1")
-                if warning and data.get("confirm") != "1":
-                    fields = {"medication_id": str(m["id"]), "taken_at": when.strftime("%Y-%m-%dT%H:%M"), "clinic_ok": "1",
-                              "dose": data.get("dose") or "", "reason_text": reason or "", "back": data.get("back") or "/"}
+                                  title="Given at the clinic", action="/dose/new", fields={**base, "clinic_ok": "1"},
+                                  back_url="/dose/new", cancel_label="Pick another medicine", cancel_primary=True,
+                                  confirm_label="Log it anyway",
+                                  note="Only log it if it was given and nobody has logged it yet.")
+                # A planned dose marked skipped that day: this is most likely that dose, given late. Ask, so the day
+                # doesn't show it skipped plus a "More than planned" dose.
+                late = None
+                if str(data.get("as_skipped") or "").isdigit():
+                    late = skipped_slot(conn, m["id"], when)
+                    if late is None or late.log["id"] != int(data["as_skipped"]) or \
+                            store.dose_stamp(late.log) != data.get("skipped_seen"):
+                        late = None
+                        answer = ""  # it changed since the question: ask again below
+                target = None if late is not None else schedule.slot_for_new_dose(conn, m["id"], when)
+                if late is None and target is None and answer not in ("1", "anyway", "separate"):
+                    was = skipped_slot(conn, m["id"], when)
+                    if was is not None:
+                        who = schedule._who_logged(was.log, my_id)
+                        who = "You" if who == "you" else who
+                        at = schedule.fmt_time(was.time) if was.time else "planned"
+                        return render(request, "dose_confirm.html", active="today", med=m, when=when,
+                                      warning=f"{who} marked the {at} dose skipped. If this is that dose, given "
+                                              "later, log it as that dose so the day shows one dose.",
+                                      action="/dose/new", fields={**base, "as_skipped": str(was.log["id"]),
+                                                                  "skipped_seen": store.dose_stamp(was.log)},
+                                      back_url=back(data.get("back")), cancel_label="Leave it as it is",
+                                      cancel_primary=True, confirm_label=f"Log it as the {at} dose",
+                                      alt_fields={**base, "confirm": "separate"}, alt_label="It's a separate dose",
+                                      note="If you're not sure whether it was given, check with whoever gave it first.")
+                warning = schedule.dose_warning(conn, m, when, by=my_id, now=current, slot=late,
+                                                unplanned_ok=data.get("clinic_ok") == "1",
+                                                exclude_id=late.log["id"] if late is not None else None)
+                if warning and not confirmed(data, warning):
+                    fields = {**base, "confirm": "anyway", "warned": warn_hash(warning)}
+                    if late is not None:
+                        fields.update({"as_skipped": str(late.log["id"]), "skipped_seen": store.dose_stamp(late.log)})
                     return render(request, "dose_confirm.html", active="today", med=m, warning=warning,
                                   cancel_label="Leave it as it is", cancel_primary=True, confirm_label="Log it anyway",
                                   action="/dose/new", fields=fields, when=when, back_url=back(data.get("back")))
-                log_id = store.log_dose(conn, m["id"], when, data.get("dose") or m["dose"], reason, by=me(request))
+                dose = data.get("dose") or m["dose"]
+                if late is not None:
+                    log_id = store.log_slot(conn, late.plan, late.key, "taken", when, store.clean(dose), by=my_id,
+                                            log_id=late.log["id"])
+                    if reason:
+                        conn.execute("UPDATE dose_logs SET reason = ? WHERE id = ?", (reason, log_id))
+                elif target is not None:
+                    # The dose fills a planned dose: record which one, so every screen and report agrees.
+                    log_id = store.log_slot(conn, target.plan, target.key, "taken", when, store.clean(dose), by=my_id,
+                                            reason=reason)
+                else:
+                    log_id = store.log_dose(conn, m["id"], when, dose, reason, by=my_id)
                 asks = schedule.asks_if_it_helped(conn, store.dose_log(conn, log_id))
+                msg = logged_flash(f"{m['name']} logged at {schedule.fmt_time(when)}{_day_words(when, current)}.", conn,
+                                   log_id, follow=log_id if asks else None, logged=[log_id])
             except store.InvalidInput as exc:
                 return render(request, "dose_new.html", status_code=400, active="today", error=str(exc),
                               back_url=back(data.get("back")), values=data, **log_dose_context(conn, current))
-        day = "" if when.date() == current.date() else (" yesterday" if (current.date() - when.date()).days == 1
-                                                        else f" on {schedule.fmt_day(when.date())}")
-        return go(back(data.get("back")), {"text": f"{m['name']} logged at {schedule.fmt_time(when)}{day}.",
-                                           "undo": log_id, "follow": log_id if asks else None, "logged": [log_id]}, request)
+        return go(back(data.get("back")), msg, request)
 
     @app.get("/dose/{log_id}", response_class=HTMLResponse)
     def dose_page(request: Request, log_id: int, saved: int = 0, back_to: str = "/"):
@@ -662,31 +880,89 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                       chips=medinfo.chips_for(row["med_info"]), info=medinfo.lookup(row["med_info"]), events=events,
                       back_url=back(back_to))
 
+    def fits_its_slot(row: sqlite3.Row, when: datetime) -> bool:
+        """Whether a dose logged for a planned dose still belongs to it at this time: the same day, the next morning
+        for an evening or bedtime dose, or the small hours after an afternoon dose (the rule Taken's clock uses)."""
+        if not row["slot"]:
+            return True
+        d = date.fromisoformat(row["slot"][:10])
+        if when.date() == d:
+            return True
+        planned = row["slot"][11:16] if len(row["slot"]) > 10 else ""
+        return when.date() == d + timedelta(days=1) and ((planned >= "17:00" and when.hour < 12)
+                                                         or (planned >= "12:00" and when.hour < 5))
+
     @app.post("/dose/{log_id}")
     async def save_dose(request: Request, log_id: int):
         data = await form(request)
+        current = now()
+        my_id = me(request)
+
+        def again(conn, error, status_code=400):
+            row = store.dose_log(conn, log_id)
+            return render(request, "dose.html", status_code=status_code, active="today", log=row, saved=False,
+                          asks=schedule.asks_if_it_helped(conn, row), back_url=back(data.get("back")), error=error,
+                          chips=medinfo.chips_for(row["med_info"]), info=medinfo.lookup(row["med_info"]))
+
         with db() as conn:
             row = store.dose_log(conn, log_id)
             if row is None:
                 raise HTTPException(404)
             if data.get("seen") and data["seen"] != row["updated_at"]:
-                return render(request, "dose.html", status_code=409, active="today", log=row, saved=False,
-                              asks=schedule.asks_if_it_helped(conn, row), back_url=back(data.get("back")),
-                              error=_changed_text(conn, row), chips=medinfo.chips_for(row["med_info"]),
-                              info=medinfo.lookup(row["med_info"]))
+                return again(conn, _changed_text(conn, row), 409)
+            status = data.get("status") or "taken"
+            rebind = None
+            if status == "taken":
+                raw = str(data.get("taken_at") or "").strip()
+                if not raw:
+                    return again(conn, "Pick the time it was taken. The time can't be left empty.")
+                try:
+                    when = store.parse_local_dt(raw, current)
+                except store.InvalidInput as exc:
+                    return again(conn, str(exc))
+                if when > current + schedule.AHEAD_OK:
+                    return again(conn, "That time hasn't happened yet. Pick the time it was taken.")
+                old = schedule.parse_local(row["taken_at"])
+                moved_day = old is None or when.date() != old.date()
+                if row["slot"] and not fits_its_slot(row, when):
+                    # Moved to another day: it no longer counts for the planned dose it was logged for. It counts for
+                    # the planned dose it fits on its new day, or none, so that day can't offer a second one.
+                    target = schedule.slot_for_new_dose(conn, row["medication_id"], when)
+                    rebind = (target.plan["id"], target.key, target.kind) if target is not None \
+                        else (None, None, row["kind"] if row["kind"] != "as_needed" else "scheduled")
+                if moved_day:
+                    med = store.medication(conn, row["medication_id"])
+                    # Only the double-dose checks: whether that day was a planned day isn't the question here.
+                    warning = schedule.dose_warning(conn, med, when, by=my_id, now=current, exclude_id=log_id,
+                                                    unplanned_ok=True) if med is not None else None
+                    if warning and not confirmed(data, warning):
+                        fields = {k: v for k, v in data.items() if k not in ("confirm", "warned")}
+                        fields.update({"confirm": "anyway", "warned": warn_hash(warning)})
+                        return render(request, "dose_confirm.html", active="today", med=med, warning=warning, when=when,
+                                      action=f"/dose/{log_id}", fields=fields, back_url=f"/dose/{log_id}",
+                                      lead="You're moving this dose to", cancel_label="Leave it as it is",
+                                      cancel_primary=True, confirm_label="Save it anyway",
+                                      note="Only save it if this is the time it was really given.")
             try:
-                store.update_dose_log(conn, log_id, data, now(), by=me(request))
+                store.update_dose_log(conn, log_id, data, current, by=my_id, rebind=rebind)
             except store.InvalidInput as exc:
-                return render(request, "dose.html", status_code=400, active="today", log=row, saved=False,
-                              asks=schedule.asks_if_it_helped(conn, row), back_url=back(data.get("back")),
-                              error=str(exc), chips=medinfo.chips_for(row["med_info"]),
-                              info=medinfo.lookup(row["med_info"]))
+                return again(conn, str(exc))
         return go(back(data.get("back")), "Saved.", request)
 
     @app.post("/dose/{log_id}/follow")
     async def follow_dose(request: Request, log_id: int):
         data = await form(request)
         with db() as conn:
+            row = store.dose_log(conn, log_id)
+            # The question was about one dose. If that dose was removed or changed since (its id can even be reused
+            # by another dose), the answer must not land on something else. Pages send the dose's stamp. Without
+            # one (a page from before), an id that was ever freed and reused is too uncertain to write to.
+            reused = conn.execute("SELECT 1 FROM history WHERE entity = 'dose' AND ref = ? AND action = 'deleted' LIMIT 1",
+                                  (str(log_id),)).fetchone() is not None
+            if row is None or row["status"] != "taken" or (data.get("seen") and data["seen"] != store.dose_stamp(row)) \
+                    or (not data.get("seen") and reused):
+                return go(back(data.get("back")), "That dose was changed or removed, so the answer wasn't saved.",
+                          request)
             store.quick_follow_up(conn, log_id, data.get("helped"), data.get("dose_feel"), by=me(request))
         return go(back(data.get("back")), "Thanks, noted.", request)
 
@@ -694,6 +970,12 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     async def delete_dose(request: Request, log_id: int):
         data = await form(request)
         with db() as conn:
+            row = store.dose_log(conn, log_id)
+            if row is not None and data.get("seen") and data["seen"] not in (row["updated_at"], store.dose_stamp(row)):
+                return render(request, "dose.html", status_code=409, active="today", log=row, saved=False,
+                              asks=schedule.asks_if_it_helped(conn, row), back_url=back(data.get("back")),
+                              error=_changed_text(conn, row), chips=medinfo.chips_for(row["med_info"]),
+                              info=medinfo.lookup(row["med_info"]))
             store.delete_dose_log(conn, log_id)
         return go(back(data.get("back")), "Dose removed.", request)
 
@@ -905,11 +1187,49 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             store.delete_medication(conn, med_id)
         return go("/medicines", "Medicine and its history deleted.", request)
 
+    def duplicate_note(conn: sqlite3.Connection, med_id: int, data: dict, plan_id: int | None = None) -> str | None:
+        """Why to pause before saving a schedule that repeats another schedule of the same medicine at the same
+        time (a form sent twice, for example): Today would show the dose twice, which invites a second dose."""
+        try:
+            new = store.validate_plan(data)
+        except store.InvalidInput:
+            return None  # saving explains what's wrong
+        if new["kind"] != "scheduled":
+            return None
+        times = set(t for t in new["times"].split(",") if t)
+        med = store.medication(conn, med_id)
+        for p in store.plans(conn, med_id):
+            if p["id"] == plan_id or p["kind"] != "scheduled":
+                continue
+            same = sorted(times & set(schedule.plan_times(p)))
+            days = p["start_day"] <= (new["end_day"] if new["end_day"] is not None else 999) and \
+                new["start_day"] <= (p["end_day"] if p["end_day"] is not None else 999)
+            cycles = p["from_cycle"] <= (new["to_cycle"] or 999) and new["from_cycle"] <= (p["to_cycle"] or 999)
+            if same and days and cycles:
+                at = " and ".join(schedule.fmt_time(t) for t in same)
+                return (f"{med['name'] if med else 'This medicine'} already has a schedule at {at} on "
+                        f"{schedule.days_text(p['start_day'], p['end_day'])}. Two schedules at the same time show the "
+                        "dose twice on Today, which can lead to a second dose.")
+        return None
+
+    def duplicate_page(request: Request, conn: sqlite3.Connection, med_id: int, data: dict, note: str, action: str):
+        return render(request, "dose_confirm.html", active="medicines", med=store.medication(conn, med_id), when=None,
+                      title="Check this schedule", warning=note, action=action,
+                      fields={**{k: v for k, v in data.items() if k != "confirm"}, "confirm": "duplicate"},
+                      back_url=f"/medicines/{med_id}?edit=1#plans", cancel_label="Leave it as it is",
+                      cancel_primary=True, confirm_label="Save it anyway",
+                      note="Only save it if it's a separate dose, like a second tablet strength at the same time.")
+
     @app.post("/medicines/{med_id}/plans")
     async def add_plan(request: Request, med_id: int):
         data = await form(request)
         try:
             with db() as conn:
+                if store.medication(conn, med_id) is None:
+                    raise HTTPException(404)
+                note = duplicate_note(conn, med_id, data) if data.get("confirm") != "duplicate" else None
+                if note:
+                    return duplicate_page(request, conn, med_id, data, note, f"/medicines/{med_id}/plans")
                 store.create_plan(conn, med_id, data)
         except store.InvalidInput as exc:
             return go(f"/medicines/{med_id}?edit=1#plans", str(exc), request)
@@ -923,13 +1243,15 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             if row is None:
                 raise HTTPException(404)
             med_id = row["medication_id"]
+            note = duplicate_note(conn, med_id, data, plan_id) if data.get("confirm") != "duplicate" else None
+            if note:
+                return duplicate_page(request, conn, med_id, data, note, f"/plans/{plan_id}")
             try:
                 store.update_plan(conn, plan_id, data)
             except store.InvalidInput as exc:
                 return go(f"/medicines/{med_id}?edit=1#plans", str(exc), request)
             current = now()
-            cycle = schedule.cycle_for_date(conn, current.date())
-            kept = [s.log for s in (schedule.slots(conn, cycle, schedule.day_number(cycle, current.date())) if cycle else [])
+            kept = [s.log for s in schedule.slots_on(conn, current.date())
                     if s.plan["medication_id"] == med_id and s.log is not None and s.log["status"] == "taken"]
         note = ""
         if kept:
@@ -1649,10 +1971,19 @@ def _chosen_time(choice: str, slot, at_time: str | None, current: datetime) -> d
     if choice == "at":
         hh, mm = (int(x) for x in str(at_time or "").split(":")[:2])
         when = datetime.combine(slot.date, datetime.min.time()).replace(hour=hh, minute=mm)
-        if slot.time and slot.time >= "18:00" and hh < 6:
+        # An afternoon, evening or bedtime dose with a morning clock time was given the next morning ("From last
+        # night" stays on Today until noon), or after midnight. A later time than now is refused by the caller.
+        if slot.time and slot.time >= "12:00" and hh < 12 and (slot.dt - when > timedelta(hours=8) or hh < 5):
             when += timedelta(days=1)
         return when
     return current
+
+
+def _day_words(when: datetime, current: datetime) -> str:
+    """'' for today, ' yesterday', or ' on Tue, Oct 13', for messages about a logged time."""
+    if when.date() == current.date():
+        return ""
+    return " yesterday" if (current.date() - when.date()).days == 1 else f" on {schedule.fmt_day(when.date())}"
 
 
 def _clinic_note(conn: sqlite3.Connection, med: sqlite3.Row, plans: list[sqlite3.Row], day: date) -> str | None:
@@ -1759,10 +2090,9 @@ def ring_geometry(days: list[schedule.RingDay], size: int = 240, compact: bool =
 
 
 def short_wait(an: schedule.AsNeeded, now: datetime) -> str:
-    nxt = an.next_allowed
-    if nxt is None:
+    if an.next_allowed is None:
         return ""
-    minutes = max(int((nxt - now).total_seconds() // 60), 0)
+    minutes = max(int(an.remaining(now).total_seconds() // 60), 0)  # real time, also the night the clocks change
     return f"{minutes // 60}h" if minutes >= 120 else f"{minutes}m" if minutes < 60 else f"{minutes // 60}h{minutes % 60:02d}"
 
 
@@ -1780,6 +2110,8 @@ def _template_globals(templates: Jinja2Templates) -> None:
         initials=profiles.initials,
         roles=profiles.ROLES,
         short_wait=short_wait,
+        dose_stamp=store.dose_stamp,
+        fmt_hours=schedule.fmt_hours,
         score=schedule.symptom_score,
         fmt_time=schedule.fmt_time,
         fmt_day=schedule.fmt_day,

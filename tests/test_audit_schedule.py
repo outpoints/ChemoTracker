@@ -9,6 +9,7 @@ Dates are always in the past (yesterday or earlier), so the results don't depend
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime, timedelta
 
 from chemotracker import export, reminders, schedule, store
@@ -148,6 +149,13 @@ def test_F4_a_duplicate_schedule_does_not_switch_off_the_second_dose_check(clien
         med = _med(conn, "Filgrastim")
     r = client.post(f"/medicines/{med}/plans", data={"kind": "scheduled", "start_day": "2", "end_day": "7",
                                                      "times": "15:00", "from_cycle": "1"}, follow_redirects=False)
+    # Owner rule (fix for F4 part 2): the form now asks before saving a second schedule at the same time.
+    # "Save it anyway" (a separate dose) still makes the duplicate this test needs.
+    assert r.status_code == 200 and "already has a schedule at 3:00 PM" in html.unescape(r.text)
+    form = r.text.split(f'action="/medicines/{med}/plans"')[1].split("</form>")[0]
+    fields = {html.unescape(k): html.unescape(v)
+              for k, v in re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form)}
+    r = client.post(f"/medicines/{med}/plans", data=fields, follow_redirects=False)
     assert r.status_code == 303
     with session(cfg.db_path) as conn:
         rows = _slots(conn, y, "Filgrastim")
@@ -229,8 +237,12 @@ def test_F7_a_dose_logged_after_the_cycle_ends_still_shows_on_today(client, cfg)
     with session(cfg.db_path) as conn:
         dex, ond = _med(conn, "Dexamethasone"), _med(conn, "Ondansetron")
     # Ondansetron as needed from "Other as-needed medicines", and a Dexamethasone the team asked for.
+    # Owner rule (as-needed F7): a day its as-needed plan doesn't cover asks first, so confirm it like the team's dose.
     r = client.post("/dose/new", data={"medication_id": ond, "taken_at": f"{y.isoformat()}T09:00", "back": "/"},
                     follow_redirects=False)
+    assert r.status_code == 200 and "planned yesterday" in html.unescape(r.text)
+    r = client.post("/dose/new", data={"medication_id": ond, "taken_at": f"{y.isoformat()}T09:00", "confirm": "1",
+                                       "back": "/"}, follow_redirects=False)
     assert r.status_code == 303
     client.post("/dose/new", data={"medication_id": dex, "taken_at": f"{y.isoformat()}T09:30", "confirm": "1",
                                    "back": "/"})

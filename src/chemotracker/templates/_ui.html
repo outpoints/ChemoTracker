@@ -114,7 +114,7 @@
 {%- set frac = an.fraction(now) -%}
 {%- set c = 113.1 -%}
 <svg class="countdown {{ st }}" viewBox="0 0 44 44" aria-hidden="true"
-     {% if st == "wait" and an.next_allowed %}data-remaining="{{ ((an.next_allowed - now).total_seconds()) | int }}" data-total="{{ (an.gap_hours * 3600) | int }}"{% endif %}>
+     {% if st == "wait" and an.next_allowed %}data-remaining="{{ an.remaining(now).total_seconds() | int }}" data-total="{{ (an.gap_hours * 3600) | int }}"{% endif %}>
   <circle class="track" cx="22" cy="22" r="18"/>
   {%- if st in ("ok", "wait") %}
   <circle class="bar" cx="22" cy="22" r="18" stroke-dasharray="{{ c }}" stroke-dashoffset="{{ (c * (1 - frac)) | round(2) }}"/>
@@ -134,7 +134,7 @@
     <div class="dose-name">{% if link %}<a href="/medicines/{{ an.medication_id }}">{{ an.name }}</a>{% else %}{{ an.name }}{% endif %}</div>
     <div class="prn-status"><strong data-status>{{ an.status_text(now) }}</strong> <span data-wait>{{ an.wait_text(now) }}</span></div>
     <div class="dose-detail">
-      {%- set facts = [an.strength, ("every " ~ (an.gap_hours | round(1) | string | replace(".0", "")) ~ " hr") if an.gap_hours, ("up to " ~ an.max_per_day ~ " a day") if an.max_per_day] | select | list %}
+      {%- set facts = [an.strength, ("every " ~ fmt_hours(an.gap_hours)) if an.gap_hours, ("up to " ~ an.max_per_day ~ " in 24 hours") if an.max_per_day] | select | list %}
       {{- facts | join(" · ") }}
       {%- if an.last_at %}{% set ld = an.last_at.date() %}{{ " · " if facts }}last {% if ld == today %}{% elif (today - ld).days == 1 %}yesterday {% else %}{{ fmt_day(ld) }} {% endif %}{{ fmt_time(an.last_at) }}{% if an.last.logged_by and people.get(an.last.logged_by) %}, {{ people[an.last.logged_by].name }}{% endif %}{% endif -%}
     </div>
