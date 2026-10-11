@@ -82,7 +82,7 @@ def _fmt_time(value: str) -> str:
     return f"{dt:%b} {dt.day}, {fmt_time(dt)}"
 
 
-def _value(entity: str, key: str, value, names: dict[tuple[str, Any], str]) -> str:
+def _value(entity: str, key: str, value, names: "_Names", at: int | None = None) -> str:
     if value is None or value == "":
         return "blank"
     if entity == "dose":
@@ -95,7 +95,7 @@ def _value(entity: str, key: str, value, names: dict[tuple[str, Any], str]) -> s
         if key == "taken_at":
             return _fmt_time(value)
         if key == "medication_id":
-            return names.get(("medication", value), f"#{value}")
+            return names.medicine(value, at) or f"#{value}"
     if entity == "symptom":
         if key == "severity":
             return SEVERITY.get(value, str(value))
@@ -110,27 +110,67 @@ def _value(entity: str, key: str, value, names: dict[tuple[str, Any], str]) -> s
     return str(value)
 
 
-def _names(conn: sqlite3.Connection) -> dict[tuple[str, Any], str]:
-    out: dict[tuple[str, Any], str] = {("medication", r["id"]): r["name"] for r in conn.execute("SELECT id, name FROM medications")}
-    # Medicines that were deleted keep their name in their last snapshot.
-    for r in conn.execute("SELECT ref, before FROM history WHERE entity = 'medication' AND action = 'deleted'"):
+def _snap_name(text: str | None) -> str | None:
+    try:
+        return json.loads(text)["name"] if text else None
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+class _Names:
+    """A medicine's name as it was when each event happened.
+
+    Before v5 SQLite could give a new medicine the id of a deleted one, so an id alone can belong to two
+    medicines over time. Each medicine's own history (added, renamed, deleted) says which name the id had
+    at any moment, so a deleted medicine's doses never take the name of the medicine added after it.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.current = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM medications")}
+        self.timeline: dict[int, list[tuple[int, str | None, str | None]]] = {}
+        for r in conn.execute("SELECT id, ref, before, after FROM history WHERE entity = 'medication' ORDER BY id"):
+            try:
+                ref = int(r["ref"])
+            except (TypeError, ValueError):
+                continue
+            self.timeline.setdefault(ref, []).append((r["id"], _snap_name(r["before"]), _snap_name(r["after"])))
+
+    def medicine(self, med_id: Any, at: int | None = None) -> str | None:
+        """The name medicine `med_id` had at history event `at` (or now, or when it was deleted)."""
         try:
-            out.setdefault(("medication", int(r["ref"])), json.loads(r["before"])["name"])
-        except (TypeError, ValueError, KeyError):
-            pass
-    return out
+            med_id = int(med_id)
+        except (TypeError, ValueError):
+            return None
+        events = self.timeline.get(med_id, [])
+        if at is not None and events:
+            earlier = [e for e in events if e[0] <= at]
+            if earlier and (earlier[-1][2] or earlier[-1][1]):
+                return earlier[-1][2] or earlier[-1][1]
+            later = [e for e in events if e[0] > at]
+            if later and later[0][1]:
+                return later[0][1]  # added before history began: its first change says what it was called
+        if med_id in self.current:
+            return self.current[med_id]
+        for _, before, after in reversed(events):
+            if after or before:
+                return after or before
+        return None
 
 
-def _subject(entity: str, snap: dict, names: dict[tuple[str, Any], str], ref: str | None) -> str:
+def _names(conn: sqlite3.Connection) -> _Names:
+    return _Names(conn)
+
+
+def _subject(entity: str, snap: dict, names: _Names, ref: str | None, at: int | None = None) -> str:
     if entity == "dose":
-        return names.get(("medication", snap.get("medication_id")), "A medicine")
+        return names.medicine(snap.get("medication_id"), at) or "A medicine"
     if entity == "symptom":
         s = sx.lookup(snap.get("symptom") or "")
         return snap.get("label") or (s.name if s else "A symptom")
     if entity == "medication":
         return snap.get("name") or "A medicine"
     if entity == "plan":
-        return f"{names.get(('medication', snap.get('medication_id')), 'A medicine')} schedule"
+        return f"{names.medicine(snap.get('medication_id'), at) or 'A medicine'} schedule"
     if entity == "cycle":
         return f"Cycle {snap.get('number', '')}".strip()
     if entity == "person":
@@ -142,7 +182,8 @@ def _subject(entity: str, snap: dict, names: dict[tuple[str, Any], str], ref: st
     return ENTITY_NAMES.get(entity, entity)
 
 
-def _event(row: sqlite3.Row, people: dict[int, str], names: dict, tz: ZoneInfo, existing: set[tuple[str, str]]) -> Event:
+def _event(row: sqlite3.Row, people: dict[int, str], names: _Names, tz: ZoneInfo,
+           existing: dict[tuple[str, str], tuple]) -> Event:
     before = json.loads(row["before"]) if row["before"] else {}
     after = json.loads(row["after"]) if row["after"] else {}
     snap = after or before
@@ -156,12 +197,13 @@ def _event(row: sqlite3.Row, people: dict[int, str], names: dict, tz: ZoneInfo, 
             if entity == "setting" and key == "key":
                 continue
             changes.append((str(labels.get(key, key.replace("_", " ").capitalize())),
-                            _value(entity, key, before.get(key), names), _value(entity, key, after.get(key), names)))
+                            _value(entity, key, before.get(key), names, row["id"]),
+                            _value(entity, key, after.get(key), names, row["id"])))
     elif row["action"] == "created" and entity in ("dose", "symptom"):
         for key in labels:
             if key in ("medication_id", "plan_id", "kind", "symptom", "slot") or snap.get(key) in (None, ""):
                 continue
-            changes.append((labels[key], "", _value(entity, key, snap.get(key), names)))
+            changes.append((labels[key], "", _value(entity, key, snap.get(key), names, row["id"])))
     elif row["action"] == "restored" and entity == "database":
         changes.append(("From backup", "", row["ref"] or ""))
     at = datetime.fromisoformat(row["at"]).astimezone(tz).replace(tzinfo=None)
@@ -169,15 +211,23 @@ def _event(row: sqlite3.Row, people: dict[int, str], names: dict, tz: ZoneInfo, 
         snap = {**after, "_before": before.get("value")} if after else {**before, "_before": before.get("value")}
     return Event(
         id=row["id"], at=at, who=people.get(row["actor"], "Someone") if row["actor"] else "Someone",
-        entity=entity, ref=row["ref"], action=row["action"], subject=_subject(entity, snap, names, row["ref"]),
+        entity=entity, ref=row["ref"], action=row["action"],
+        subject=_subject(entity, snap, names, row["ref"], row["id"]),
         changes=changes, snapshot=before if row["action"] == "deleted" else snap,
-        can_put_back=row["action"] == "deleted" and entity in CAN_PUT_BACK and (entity, row["ref"]) not in existing,
+        can_put_back=row["action"] == "deleted" and entity in CAN_PUT_BACK
+        and existing.get((entity, row["ref"])) != _identity(entity, before),
     )
 
 
-def _existing(conn: sqlite3.Connection) -> set[tuple[str, str]]:
-    out = {("dose", str(r[0])) for r in conn.execute("SELECT id FROM dose_logs")}
-    out |= {("symptom", str(r[0])) for r in conn.execute("SELECT id FROM symptom_logs")}
+def _identity(entity: str, snap: dict | sqlite3.Row) -> tuple:
+    """What makes an entry the same entry. Not its id alone: before v5 a deleted entry's id could be reused."""
+    keys = ("created_at", "medication_id") if entity == "dose" else ("created_at", "symptom")
+    return tuple(snap[k] if k in snap.keys() else None for k in keys)
+
+
+def _existing(conn: sqlite3.Connection) -> dict[tuple[str, str], tuple]:
+    out = {("dose", str(r["id"])): _identity("dose", r) for r in conn.execute("SELECT id, created_at, medication_id FROM dose_logs")}
+    out |= {("symptom", str(r["id"])): _identity("symptom", r) for r in conn.execute("SELECT id, created_at, symptom FROM symptom_logs")}
     return out
 
 
@@ -262,8 +312,23 @@ class CannotPutBack(Exception):
     pass
 
 
-def put_back(conn: sqlite3.Connection, event_id: int) -> tuple[str, int]:
-    """Re-create a deleted dose or symptom entry from its last snapshot, with its original id."""
+class CheckFirst(CannotPutBack):
+    """Putting this dose back could record one dose twice. The person decides, with the warning in front of them."""
+
+    def __init__(self, warning: str, med: sqlite3.Row, when: datetime) -> None:
+        super().__init__(warning)
+        self.warning, self.med, self.when = warning, med, when
+
+
+def put_back(conn: sqlite3.Connection, event_id: int, confirm: bool = False, by: int | None = None,
+             now: datetime | None = None) -> tuple[str, int]:
+    """Re-create a deleted dose or symptom entry from its last snapshot, with its original id when it's free.
+
+    A dose that was logged again since it was deleted (from its row, from "Log a dose", or after its time
+    changed) is not brought back a second time: the same pairing every page uses decides whether its planned
+    dose is already filled, and the same double-dose check every logging route runs asks first (CheckFirst)
+    unless `confirm` says the person has seen it.
+    """
     row = conn.execute("SELECT * FROM history WHERE id = ?", (event_id,)).fetchone()
     if row is None or row["action"] != "deleted" or row["entity"] not in CAN_PUT_BACK or not row["before"]:
         raise CannotPutBack("That entry can't be put back.")
@@ -271,17 +336,13 @@ def put_back(conn: sqlite3.Connection, event_id: int) -> tuple[str, int]:
     snap = json.loads(row["before"])
     cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
     data = {c: snap.get(c) for c in cols if c in snap}
-    if conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (data.get("id"),)).fetchone():
-        raise CannotPutBack("It's already back.")
+    holder = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (data.get("id"),)).fetchone()
+    if holder is not None:
+        if _identity(row["entity"], holder) == _identity(row["entity"], snap):
+            raise CannotPutBack("It's already back.")
+        data.pop("id")  # its old id now belongs to another entry, so it comes back with a new one
     if table == "dose_logs":
-        if data.get("medication_id") and not conn.execute(
-                "SELECT 1 FROM medications WHERE id = ?", (data["medication_id"],)).fetchone():
-            raise CannotPutBack("Its medicine was removed, so this dose can't come back on its own.")
-        if data.get("plan_id") and not conn.execute("SELECT 1 FROM plans WHERE id = ?", (data["plan_id"],)).fetchone():
-            data["plan_id"] = None
-        if data.get("plan_id") and data.get("slot") and conn.execute(
-                "SELECT 1 FROM dose_logs WHERE plan_id = ? AND slot = ?", (data["plan_id"], data["slot"])).fetchone():
-            raise CannotPutBack("That planned dose has a newer entry. Change that one instead.")
+        _check_dose(conn, data, confirm, by, now)
     for who in ("logged_by", "updated_by"):
         if data.get(who) and not conn.execute("SELECT 1 FROM profiles WHERE id = ?", (data[who],)).fetchone():
             data[who] = None
@@ -289,3 +350,29 @@ def put_back(conn: sqlite3.Connection, event_id: int) -> tuple[str, int]:
     cur = conn.execute(f"INSERT INTO {table} ({', '.join(keys)}) VALUES ({', '.join('?' for _ in keys)})",
                        [data[k] for k in keys])
     return row["entity"], rowid(cur)
+
+
+def _check_dose(conn: sqlite3.Connection, data: dict, confirm: bool, by: int | None, now: datetime | None) -> None:
+    from . import schedule
+
+    med = conn.execute("SELECT * FROM medications WHERE id = ?", (data.get("medication_id"),)).fetchone()
+    if med is None:
+        raise CannotPutBack("Its medicine was removed, so this dose can't come back on its own.")
+    if data.get("plan_id") and not conn.execute("SELECT 1 FROM plans WHERE id = ?", (data["plan_id"],)).fetchone():
+        data["plan_id"] = None
+    slot = None
+    if data.get("plan_id") and data.get("slot"):
+        if conn.execute("SELECT 1 FROM dose_logs WHERE plan_id = ? AND slot = ?", (data["plan_id"], data["slot"])).fetchone():
+            raise CannotPutBack("That planned dose has a newer entry. Change that one instead.")
+        slot = schedule.find_slot(conn, data["plan_id"], data["slot"])
+        if slot is not None and slot.log is not None:
+            # Logged again some other way ("Log a dose", Took one, or before a time change): the row is filled.
+            raise CannotPutBack("That planned dose has a newer entry. Change that one instead.")
+    if data.get("status") != "taken" or confirm:
+        return
+    when = schedule.parse_local(data.get("taken_at")) or (slot.dt if slot is not None else None)
+    if when is None:
+        return
+    warning = schedule.dose_warning(conn, med, when, by=by, slot=slot, now=now)
+    if warning:
+        raise CheckFirst(warning, med, when)

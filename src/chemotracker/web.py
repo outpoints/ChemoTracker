@@ -1188,9 +1188,12 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
 
     @app.post("/medicines/{med_id}/delete")
     async def remove_medicine(request: Request, med_id: int):
-        with db() as conn:
-            store.delete_medication(conn, med_id)
-        return go("/medicines", "Medicine and its history deleted.", request)
+        try:
+            with db() as conn:
+                store.delete_medication(conn, med_id)
+        except store.InvalidInput as exc:  # it has logged doses: they stay in the report
+            return go(f"/medicines/{med_id}", str(exc), request)
+        return go("/medicines", "Medicine deleted. It's still in the change history.", request)
 
     def duplicate_note(conn: sqlite3.Connection, med_id: int, data: dict, plan_id: int | None = None) -> str | None:
         """Why to pause before saving a schedule that repeats another schedule of the same medicine at the same
@@ -1436,7 +1439,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         return render(request, "settings.html", active="settings", history=backup_log, files=files, cfg=cfg,
                       next_backup=scheduler.next_at or backup.next_run(cfg, now()), changes=changes,
                       nudger=nudger, suggested_topic=draft or reminders.new_topic(), roles=profiles.ROLES,
-                      suggested_url=str(request.base_url).rstrip("/"))
+                      suggested_url=str(request.base_url).rstrip("/"), keep_special=backup.KEEP_SPECIAL)
 
     # ------------------------------------------------------------ reminders
 
@@ -1478,7 +1481,10 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         with db() as conn:
             current = {t: conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0] for t, tbl in
                        (("doses", "dose_logs"), ("symptoms", "symptom_logs"), ("medicines", "medications"), ("cycles", "cycles"))}
-        return render(request, "restore.html", active="settings", file=backup.describe(path), info=info, current=current)
+            # Counts can match while different entries go and come back, so name every one of them.
+            changes = backup.compare(conn, path) if info["ok"] else backup.Changes()
+        return render(request, "restore.html", active="settings", file=backup.describe(path, cfg.tz), info=info,
+                      current=current, changes=changes, keep_special=backup.KEEP_SPECIAL)
 
     @app.post("/settings/restore")
     async def restore_now(request: Request):
@@ -1489,10 +1495,11 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         except backup.RestoreError as exc:
             return go("/settings#backups", str(exc), request)
         app.state.db_health = quick_check(cfg.db_path)
-        when = backup.describe(path)
+        when = backup.describe(path, cfg.tz)
         label = f"{schedule.fmt_day(when.taken.date())} {schedule.fmt_time(when.taken)}" if when else path.name
         return go("/", f"Restored the backup from {label}. What was here before is saved as "
-                       f"\"{safety.name}\" in Settings, so you can switch back.", request)
+                       f"\"{safety.name}\" in Settings, so you can switch back. Regular backups never clear it. "
+                       f"The app keeps the last {backup.KEEP_SPECIAL} copies saved before a restore.", request)
 
     @app.post("/settings/restore/upload")
     async def restore_upload(request: Request):
@@ -1565,11 +1572,22 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     @app.post("/history/{event_id}/put-back")
     async def history_put_back(request: Request, event_id: int):
         data = await form(request)
+        back_url = back(data.get("back"), "/history")
+        by = me(request)
         try:
             with db() as conn:
-                entity, new_id = history.put_back(conn, event_id)
+                entity, new_id = history.put_back(conn, event_id, confirm=data.get("confirm") == "1", by=by, now=now())
+        except history.CheckFirst as exc:
+            # The same dose may have been logged again since it was deleted. Same check, same choice as logging.
+            return render(request, "dose_confirm.html", status_code=409, active="settings", med=exc.med,
+                          title="Check before you put this back", warning=exc.warning, when=exc.when,
+                          action=f"/history/{event_id}/put-back", fields={"back": back_url}, back_url=back_url,
+                          lead="You're putting back", cancel_label="Leave it as it is", cancel_primary=True,
+                          confirm_label="Put it back anyway",
+                          note="Only put it back if it was a separate dose. If it's the same dose logged again, "
+                               "the record is already right.")
         except history.CannotPutBack as exc:
-            return go(back(data.get("back"), "/history"), str(exc), request)
+            return go(back_url, str(exc), request)
         target = f"/dose/{new_id}" if entity == "dose" else f"/symptoms/{new_id}"
         return go(target, "Put back. It's in the record again.", request)
 

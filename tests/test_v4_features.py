@@ -79,6 +79,14 @@ def test_cascades_and_secrets_in_history(client, cfg):
     setup_walkthrough(client, today(cfg) - timedelta(days=1))
     _, meds = _ids(cfg)
     client.post("/dose/quick", data={"medication_id": meds["Prochlorperazine"], "back": "/"})
+    # A medicine with logged doses can't be deleted: the care team's report needs its doses (audit F16).
+    r = client.post(f"/medicines/{meds['Prochlorperazine']}/delete", follow_redirects=True)
+    assert "be deleted" in r.text and "Stop this medicine" in r.text
+    with session(cfg.db_path) as conn:
+        dose = conn.execute("SELECT id FROM dose_logs WHERE medication_id = ?", (meds["Prochlorperazine"],)).fetchone()
+    assert dose is not None
+    # Once its dose is deleted (logged by mistake), the medicine can go, and its schedule with it.
+    client.post(f"/dose/{dose['id']}/delete", data={"back": "/"})
     client.post(f"/medicines/{meds['Prochlorperazine']}/delete")
     actions = {(h["entity"], h["action"]) for h in _history(cfg)}
     assert {("medication", "deleted"), ("dose", "deleted"), ("plan", "deleted")} <= actions

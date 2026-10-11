@@ -163,6 +163,163 @@ MIGRATIONS: list[str] = [
     UPDATE medications SET prep_minutes = 30, prep_note = 'Take it out of the fridge'
      WHERE info_key IN ('filgrastim', 'pegfilgrastim') AND route = 'injection' AND prep_minutes IS NULL;
     """,
+    # v5: an id is never handed out twice. Without AUTOINCREMENT SQLite gives a new row the id of the newest
+    # deleted one, so an Undo button, a follow-up answer or a history line holding that id could act on, or
+    # show, a different entry. Each table is rebuilt with the same columns in the same order, every row is
+    # copied as it is (checked before the old table goes), and the counters start above every id the table
+    # has ever used, deleted ones included. migrate() runs this with foreign keys off: dropping the old
+    # medications table with them on would delete every dose and schedule that points at it.
+    """
+    CREATE TEMP TABLE upgrade_check (ok INTEGER NOT NULL CHECK (ok = 1));
+
+    CREATE TABLE medications_v5 (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        name              TEXT NOT NULL,
+        brand             TEXT,
+        info_key          TEXT,
+        category          TEXT,
+        route             TEXT NOT NULL DEFAULT 'oral',
+        strength          TEXT,
+        dose              TEXT,
+        directions        TEXT,
+        min_hours_between REAL CHECK (min_hours_between IS NULL OR min_hours_between > 0),
+        max_per_day       INTEGER CHECK (max_per_day IS NULL OR max_per_day > 0),
+        notes             TEXT,
+        active            INTEGER NOT NULL DEFAULT 1,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL,
+        prep_minutes      INTEGER CHECK (prep_minutes IS NULL OR prep_minutes BETWEEN 1 AND 1440),
+        prep_note         TEXT
+    );
+    INSERT INTO medications_v5 (id, name, brand, info_key, category, route, strength, dose, directions,
+                                min_hours_between, max_per_day, notes, active, created_at, updated_at,
+                                prep_minutes, prep_note)
+         SELECT id, name, brand, info_key, category, route, strength, dose, directions,
+                min_hours_between, max_per_day, notes, active, created_at, updated_at, prep_minutes, prep_note
+           FROM medications;
+    INSERT INTO upgrade_check
+         SELECT NOT EXISTS (SELECT * FROM medications EXCEPT SELECT * FROM medications_v5)
+            AND NOT EXISTS (SELECT * FROM medications_v5 EXCEPT SELECT * FROM medications);
+    DROP TABLE medications;
+    ALTER TABLE medications_v5 RENAME TO medications;
+
+    CREATE TABLE plans_v5 (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        medication_id INTEGER NOT NULL REFERENCES medications(id) ON DELETE CASCADE,
+        kind          TEXT NOT NULL CHECK (kind IN ('scheduled', 'as_needed', 'clinic')),
+        start_day     INTEGER NOT NULL CHECK (start_day >= 0),
+        end_day       INTEGER CHECK (end_day IS NULL OR end_day >= start_day),
+        times         TEXT NOT NULL DEFAULT '',
+        label         TEXT,
+        from_cycle    INTEGER NOT NULL DEFAULT 1 CHECK (from_cycle >= 1),
+        to_cycle      INTEGER CHECK (to_cycle IS NULL OR to_cycle >= from_cycle),
+        created_at    TEXT NOT NULL,
+        dose          TEXT
+    );
+    INSERT INTO plans_v5 (id, medication_id, kind, start_day, end_day, times, label, from_cycle, to_cycle,
+                          created_at, dose)
+         SELECT id, medication_id, kind, start_day, end_day, times, label, from_cycle, to_cycle, created_at, dose
+           FROM plans;
+    INSERT INTO upgrade_check
+         SELECT NOT EXISTS (SELECT * FROM plans EXCEPT SELECT * FROM plans_v5)
+            AND NOT EXISTS (SELECT * FROM plans_v5 EXCEPT SELECT * FROM plans);
+    DROP TABLE plans;
+    ALTER TABLE plans_v5 RENAME TO plans;
+    CREATE INDEX plans_med ON plans(medication_id);
+
+    CREATE TABLE cycles_v5 (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        number      INTEGER NOT NULL UNIQUE CHECK (number > 0),
+        day1        TEXT NOT NULL,
+        length_days INTEGER NOT NULL DEFAULT 14 CHECK (length_days BETWEEN 1 AND 90),
+        regimen     TEXT,
+        notes       TEXT,
+        created_at  TEXT NOT NULL
+    );
+    INSERT INTO cycles_v5 (id, number, day1, length_days, regimen, notes, created_at)
+         SELECT id, number, day1, length_days, regimen, notes, created_at FROM cycles;
+    INSERT INTO upgrade_check
+         SELECT NOT EXISTS (SELECT * FROM cycles EXCEPT SELECT * FROM cycles_v5)
+            AND NOT EXISTS (SELECT * FROM cycles_v5 EXCEPT SELECT * FROM cycles);
+    DROP TABLE cycles;
+    ALTER TABLE cycles_v5 RENAME TO cycles;
+
+    CREATE TABLE dose_logs_v5 (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        medication_id INTEGER NOT NULL REFERENCES medications(id) ON DELETE CASCADE,
+        plan_id       INTEGER REFERENCES plans(id) ON DELETE SET NULL,
+        kind          TEXT NOT NULL DEFAULT 'as_needed',
+        slot          TEXT,
+        status        TEXT NOT NULL CHECK (status IN ('taken', 'skipped')),
+        taken_at      TEXT,
+        dose          TEXT,
+        reason        TEXT,
+        helped        TEXT CHECK (helped IN ('yes', 'some', 'no', 'unsure')),
+        dose_feel     TEXT CHECK (dose_feel IN ('right', 'too_strong', 'not_enough')),
+        side_effects  TEXT,
+        notes         TEXT,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL,
+        logged_by     INTEGER REFERENCES profiles(id) ON DELETE SET NULL,
+        updated_by    INTEGER REFERENCES profiles(id) ON DELETE SET NULL
+    );
+    INSERT INTO dose_logs_v5 (id, medication_id, plan_id, kind, slot, status, taken_at, dose, reason, helped,
+                              dose_feel, side_effects, notes, created_at, updated_at, logged_by, updated_by)
+         SELECT id, medication_id, plan_id, kind, slot, status, taken_at, dose, reason, helped,
+                dose_feel, side_effects, notes, created_at, updated_at, logged_by, updated_by
+           FROM dose_logs;
+    INSERT INTO upgrade_check
+         SELECT NOT EXISTS (SELECT * FROM dose_logs EXCEPT SELECT * FROM dose_logs_v5)
+            AND NOT EXISTS (SELECT * FROM dose_logs_v5 EXCEPT SELECT * FROM dose_logs);
+    DROP TABLE dose_logs;
+    ALTER TABLE dose_logs_v5 RENAME TO dose_logs;
+    CREATE UNIQUE INDEX dose_logs_plan_slot ON dose_logs(plan_id, slot)
+        WHERE plan_id IS NOT NULL AND slot IS NOT NULL;
+    CREATE INDEX dose_logs_med_time ON dose_logs(medication_id, taken_at);
+
+    CREATE TABLE symptom_logs_v5 (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        logged_at  TEXT NOT NULL,
+        symptom    TEXT NOT NULL,
+        label      TEXT,
+        severity   INTEGER CHECK (severity BETWEEN 0 AND 3),
+        value      REAL,
+        notes      TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        logged_by  INTEGER REFERENCES profiles(id) ON DELETE SET NULL,
+        updated_by INTEGER REFERENCES profiles(id) ON DELETE SET NULL
+    );
+    INSERT INTO symptom_logs_v5 (id, logged_at, symptom, label, severity, value, notes, created_at, updated_at,
+                                 logged_by, updated_by)
+         SELECT id, logged_at, symptom, label, severity, value, notes, created_at, updated_at, logged_by, updated_by
+           FROM symptom_logs;
+    INSERT INTO upgrade_check
+         SELECT NOT EXISTS (SELECT * FROM symptom_logs EXCEPT SELECT * FROM symptom_logs_v5)
+            AND NOT EXISTS (SELECT * FROM symptom_logs_v5 EXCEPT SELECT * FROM symptom_logs);
+    DROP TABLE symptom_logs;
+    ALTER TABLE symptom_logs_v5 RENAME TO symptom_logs;
+    CREATE INDEX symptom_logs_time ON symptom_logs(logged_at);
+
+    -- Start each counter above every id ever used, including deleted entries that history still points at.
+    DELETE FROM sqlite_sequence WHERE name IN ('medications', 'plans', 'cycles', 'dose_logs', 'symptom_logs',
+        'medications_v5', 'plans_v5', 'cycles_v5', 'dose_logs_v5', 'symptom_logs_v5');
+    INSERT INTO sqlite_sequence (name, seq) VALUES
+        ('medications', MAX((SELECT IFNULL(MAX(id), 0) FROM medications),
+            (SELECT IFNULL(MAX(CAST(ref AS INTEGER)), 0) FROM history WHERE entity = 'medication'))),
+        ('plans', MAX((SELECT IFNULL(MAX(id), 0) FROM plans),
+            (SELECT IFNULL(MAX(CAST(ref AS INTEGER)), 0) FROM history WHERE entity = 'plan'))),
+        ('cycles', MAX((SELECT IFNULL(MAX(id), 0) FROM cycles),
+            (SELECT IFNULL(MAX(CAST(ref AS INTEGER)), 0) FROM history WHERE entity = 'cycle'))),
+        ('dose_logs', MAX((SELECT IFNULL(MAX(id), 0) FROM dose_logs),
+            (SELECT IFNULL(MAX(CAST(ref AS INTEGER)), 0) FROM history WHERE entity = 'dose'))),
+        ('symptom_logs', MAX((SELECT IFNULL(MAX(id), 0) FROM symptom_logs),
+            (SELECT IFNULL(MAX(CAST(ref AS INTEGER)), 0) FROM history WHERE entity = 'symptom')));
+    INSERT INTO upgrade_check SELECT NOT EXISTS (SELECT 1 FROM pragma_foreign_key_check) OR
+        (SELECT COUNT(*) FROM pragma_foreign_key_check) <= (SELECT n FROM temp.fk_before);
+    DROP TABLE temp.upgrade_check;
+    DROP TABLE temp.fk_before;
+    """,
 ]
 
 # ---------------------------------------------------------------- change history
@@ -286,8 +443,19 @@ def migrate(path: Path | str) -> int:
     try:
         conn.execute("PRAGMA journal_mode = WAL")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= len(MIGRATIONS):
+            return version
+        # Foreign keys stay off while the structure changes: rebuilding a table drops the old one, and with
+        # them on that would also delete every row pointing at it. Each step checks its own work instead
+        # (v5 compares every copied row and the broken-link count) and is all-or-nothing.
+        conn.execute("PRAGMA foreign_keys = OFF")
         for index, script in enumerate(MIGRATIONS[version:], start=version + 1):
-            conn.executescript(f"BEGIN IMMEDIATE;\n{script}\nPRAGMA user_version = {index};\nCOMMIT;")
+            conn.executescript(
+                "BEGIN IMMEDIATE;\n"
+                "CREATE TEMP TABLE IF NOT EXISTS fk_before AS SELECT COUNT(*) AS n FROM pragma_foreign_key_check;\n"
+                f"{script}\nDROP TABLE IF EXISTS temp.fk_before;\nPRAGMA user_version = {index};\nCOMMIT;"
+            )
+        conn.execute("PRAGMA foreign_keys = ON")
         return conn.execute("PRAGMA user_version").fetchone()[0]
     finally:
         conn.close()

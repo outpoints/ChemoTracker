@@ -134,6 +134,7 @@
       <summary>Advanced, for whoever set this up</summary>
       <div class="stack">
         <p class="meta">Backups go to <code class="topic">{{ cfg.backup_dir }}</code>. Each one is a copy of the database plus the Excel report. The folder and schedule are set with the CHEMO_BACKUP_* settings in the README.</p>
+        <p class="meta">Copies saved before a restore or an update, and files you upload, don't count toward the newest {{ cfg.backup_keep }}. The newest {{ keep_special }} of each are kept.</p>
         {% if files | length > 5 %}<p class="meta">{{ files | length - 5 }} older {{ "copy is" if files | length - 5 == 1 else "copies are" }} in that folder too.</p>{% endif %}
         <form class="form" method="post" action="/settings/restore/upload" enctype="multipart/form-data">
           <div class="field"><label for="restore_file">Restore from a file</label>
