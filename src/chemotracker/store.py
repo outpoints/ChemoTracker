@@ -151,9 +151,9 @@ def delete_medication(conn: sqlite3.Connection, med_id: int) -> None:
                             LEFT JOIN dose_logs dl ON dl.medication_id = m.id WHERE m.id = ? GROUP BY m.id""",
                        (med_id,)).fetchone()
     if row is not None and row["n"]:
-        doses = "1 dose" if row["n"] == 1 else f"{row['n']} doses"
+        doses, them = ("1 dose", "it") if row["n"] == 1 else (f"{row['n']} doses", "them")
         raise InvalidInput(f"{row['name']} has {doses} in the record, so it can't be deleted. The care team's report "
-                           "needs them. To take it off Today, use Stop this medicine. If a dose was logged by "
+                           f"needs {them}. To take it off Today, use Stop this medicine. If a dose was logged by "
                            "mistake, delete that dose first.")
     conn.execute("DELETE FROM medications WHERE id = ?", (med_id,))
 
