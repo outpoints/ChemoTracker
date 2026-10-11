@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import html
+
 import pytest
 
-from chemotracker import rxparse
+from chemotracker import rxparse, store
+from chemotracker.db import session
 from chemotracker.web import RX_EXAMPLE
 
 
@@ -227,3 +230,23 @@ def test_on_body_injector_has_no_fridge_step():
     assert (m.brand, m.no_prep, m.prep_minutes, m.plans[0].label) == ("Neulasta Onpro", True, None, "On-body injector")
     syringe = one("Pegfilgrastim 6 mg/0.6 mL syringe - Inject 6 mg under the skin once on day 2")
     assert not syringe.no_prep and syringe.brand == "Neulasta"
+
+
+@pytest.mark.parametrize("text", [
+    "Dexamethasone 4 mg tablet - Take 2 tablets the night before chemo and 2 tablets the morning of chemo",
+    "Dexamethasone 4 mg tablet - Take 5 tablets (20 mg) by mouth 12 hours and 6 hours before chemo",
+    "Dexamethasone 4 mg tablet - Take 1 tablet every 6 hours x 4 doses starting the night before chemo",
+    "Ondansetron 8 mg tablet - Take 1 tablet by mouth 8 times a day",
+    "Ondansetron 8 mg tablet - Take 1 tablet by mouth every 8 hours for 2 days, then every 8 hours as needed",
+    "Fentanyl 25 mcg/hr patch - Apply 1 patch to the skin every 72 hours",
+    "Ondansetron 8 mg tablet - Take 8 mcg by mouth every 8 hours as needed",
+    "Examplemide 10 mg tab - Take 1 tablet daily x 99 doses",
+])
+def test_new_readings_show_on_the_preview_and_save(client, cfg, text):
+    m = one(text)
+    page = client.post("/rx/preview", data={"rx_text": text})
+    assert page.status_code == 200 and all(n in html.unescape(page.text) for n in m.notes)
+    with session(cfg.db_path, write=True) as conn:
+        saved = store.plans(conn, store.import_parsed(conn, m, None))
+    assert sorted((p["kind"], p["start_day"], p["times"] or "") for p in saved) == \
+        sorted((p.kind, p.start_day, ",".join(p.times)) for p in m.plans)

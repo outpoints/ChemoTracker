@@ -994,6 +994,8 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
             start = s.days[0] if s.days else (s.start if s.start is not None else (
                 prev_end + 1 if prev_end is not None else (info.defaults.days[0] if info else 1)))
             points = _dose_points(s, start)
+            if points and max(day for day, _, _ in points) > 90:  # past what a cycle can hold
+                points = []
             if points:
                 med.notes.append(f"Label says {s.n_doses} doses. The app set them for {_points_text(points)}. "
                                  "Change the times if you were told others.")
