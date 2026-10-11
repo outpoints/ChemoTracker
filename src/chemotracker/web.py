@@ -1241,11 +1241,22 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     @app.post("/history/{event_id}/put-back")
     async def history_put_back(request: Request, event_id: int):
         data = await form(request)
+        back_url = back(data.get("back"), "/history")
+        by = me(request)
         try:
             with db() as conn:
-                entity, new_id = history.put_back(conn, event_id)
+                entity, new_id = history.put_back(conn, event_id, confirm=data.get("confirm") == "1", by=by, now=now())
+        except history.CheckFirst as exc:
+            # The same dose may have been logged again since it was deleted. Same check, same choice as logging.
+            return render(request, "dose_confirm.html", status_code=409, active="settings", med=exc.med,
+                          title="Check before you put this back", warning=exc.warning, when=exc.when,
+                          action=f"/history/{event_id}/put-back", fields={"back": back_url}, back_url=back_url,
+                          lead="You're putting back", cancel_label="Leave it as it is", cancel_primary=True,
+                          confirm_label="Put it back anyway",
+                          note="Only put it back if it was a separate dose. If it's the same dose logged again, "
+                               "the record is already right.")
         except history.CannotPutBack as exc:
-            return go(back(data.get("back"), "/history"), str(exc), request)
+            return go(back_url, str(exc), request)
         target = f"/dose/{new_id}" if entity == "dose" else f"/symptoms/{new_id}"
         return go(target, "Put back. It's in the record again.", request)
 

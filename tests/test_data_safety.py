@@ -152,3 +152,31 @@ def test_put_back_names_a_deleted_medicines_doses_by_their_own_name_in_the_repor
     with session(cfg.db_path) as conn:
         rows = export.dose_rows(conn, y, y, local_now(cfg))
     assert [r.status for r in rows if r.medicine.startswith("Filgrastim")] == ["Taken"]
+
+
+def test_put_back_after_a_time_change_asks_first_with_leave_it_as_it_is_primary(client, cfg):
+    """The deleted dose's planned time no longer exists, and that day's one dose was logged at the new time."""
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    y = today(cfg) - timedelta(days=1)
+    with session(cfg.db_path) as conn:
+        dex = _plan(conn, "Dexamethasone")
+    client.post("/slot", data={"plan_id": dex["id"], "slot": f"{y} 08:00", "status": "taken", "taken_at": f"{y}T08:05",
+                               "back": "/"})
+    with session(cfg.db_path) as conn:
+        first = conn.execute("SELECT id FROM dose_logs WHERE plan_id = ?", (dex["id"],)).fetchone()["id"]
+    client.post(f"/dose/{first}/delete", data={"back": "/"})
+    r = client.post(f"/plans/{dex['id']}", data={"kind": "scheduled", "start_day": "2", "end_day": "4", "times": "09:00",
+                                                "label": "", "from_cycle": "1"}, follow_redirects=False)
+    assert r.status_code == 303
+    client.post("/slot", data={"plan_id": dex["id"], "slot": f"{y} 09:00", "status": "taken", "taken_at": f"{y}T09:05",
+                               "back": "/"})
+    with session(cfg.db_path) as conn:
+        event = conn.execute("SELECT id FROM history WHERE entity = 'dose' AND action = 'deleted' AND ref = ?",
+                             (str(first),)).fetchone()["id"]
+    r = client.post(f"/history/{event}/put-back", data={"back": "/history"}, follow_redirects=False)
+    assert r.status_code == 409 and "Check before you put this back" in r.text
+    assert re.search(r'class="btn btn-primary btn-lg" href="/history">Leave it as it is', r.text)
+    with session(cfg.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM dose_logs WHERE medication_id = ?", (dex["medication_id"],)).fetchone()[0] == 1
+    r = client.post(f"/history/{event}/put-back", data={"back": "/history", "confirm": "1"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/dose/{first}"

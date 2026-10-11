@@ -312,8 +312,23 @@ class CannotPutBack(Exception):
     pass
 
 
-def put_back(conn: sqlite3.Connection, event_id: int) -> tuple[str, int]:
-    """Re-create a deleted dose or symptom entry from its last snapshot, with its original id when it's free."""
+class CheckFirst(CannotPutBack):
+    """Putting this dose back could record one dose twice. The person decides, with the warning in front of them."""
+
+    def __init__(self, warning: str, med: sqlite3.Row, when: datetime) -> None:
+        super().__init__(warning)
+        self.warning, self.med, self.when = warning, med, when
+
+
+def put_back(conn: sqlite3.Connection, event_id: int, confirm: bool = False, by: int | None = None,
+             now: datetime | None = None) -> tuple[str, int]:
+    """Re-create a deleted dose or symptom entry from its last snapshot, with its original id when it's free.
+
+    A dose that was logged again since it was deleted (from its row, from "Log a dose", or after its time
+    changed) is not brought back a second time: the same pairing every page uses decides whether its planned
+    dose is already filled, and the same double-dose check every logging route runs asks first (CheckFirst)
+    unless `confirm` says the person has seen it.
+    """
     row = conn.execute("SELECT * FROM history WHERE id = ?", (event_id,)).fetchone()
     if row is None or row["action"] != "deleted" or row["entity"] not in CAN_PUT_BACK or not row["before"]:
         raise CannotPutBack("That entry can't be put back.")
@@ -327,14 +342,7 @@ def put_back(conn: sqlite3.Connection, event_id: int) -> tuple[str, int]:
             raise CannotPutBack("It's already back.")
         data.pop("id")  # its old id now belongs to another entry, so it comes back with a new one
     if table == "dose_logs":
-        if data.get("medication_id") and not conn.execute(
-                "SELECT 1 FROM medications WHERE id = ?", (data["medication_id"],)).fetchone():
-            raise CannotPutBack("Its medicine was removed, so this dose can't come back on its own.")
-        if data.get("plan_id") and not conn.execute("SELECT 1 FROM plans WHERE id = ?", (data["plan_id"],)).fetchone():
-            data["plan_id"] = None
-        if data.get("plan_id") and data.get("slot") and conn.execute(
-                "SELECT 1 FROM dose_logs WHERE plan_id = ? AND slot = ?", (data["plan_id"], data["slot"])).fetchone():
-            raise CannotPutBack("That planned dose has a newer entry. Change that one instead.")
+        _check_dose(conn, data, confirm, by, now)
     for who in ("logged_by", "updated_by"):
         if data.get(who) and not conn.execute("SELECT 1 FROM profiles WHERE id = ?", (data[who],)).fetchone():
             data[who] = None
@@ -342,3 +350,29 @@ def put_back(conn: sqlite3.Connection, event_id: int) -> tuple[str, int]:
     cur = conn.execute(f"INSERT INTO {table} ({', '.join(keys)}) VALUES ({', '.join('?' for _ in keys)})",
                        [data[k] for k in keys])
     return row["entity"], rowid(cur)
+
+
+def _check_dose(conn: sqlite3.Connection, data: dict, confirm: bool, by: int | None, now: datetime | None) -> None:
+    from . import schedule
+
+    med = conn.execute("SELECT * FROM medications WHERE id = ?", (data.get("medication_id"),)).fetchone()
+    if med is None:
+        raise CannotPutBack("Its medicine was removed, so this dose can't come back on its own.")
+    if data.get("plan_id") and not conn.execute("SELECT 1 FROM plans WHERE id = ?", (data["plan_id"],)).fetchone():
+        data["plan_id"] = None
+    slot = None
+    if data.get("plan_id") and data.get("slot"):
+        if conn.execute("SELECT 1 FROM dose_logs WHERE plan_id = ? AND slot = ?", (data["plan_id"], data["slot"])).fetchone():
+            raise CannotPutBack("That planned dose has a newer entry. Change that one instead.")
+        slot = schedule.find_slot(conn, data["plan_id"], data["slot"])
+        if slot is not None and slot.log is not None:
+            # Logged again some other way ("Log a dose", Took one, or before a time change): the row is filled.
+            raise CannotPutBack("That planned dose has a newer entry. Change that one instead.")
+    if data.get("status") != "taken" or confirm:
+        return
+    when = schedule.parse_local(data.get("taken_at")) or (slot.dt if slot is not None else None)
+    if when is None:
+        return
+    warning = schedule.dose_warning(conn, med, when, by=by, slot=slot, now=now)
+    if warning:
+        raise CheckFirst(warning, med, when)
