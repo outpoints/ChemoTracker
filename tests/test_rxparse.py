@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import html
+
 import pytest
 
-from chemotracker import rxparse
+from chemotracker import rxparse, store
+from chemotracker.db import session
 from chemotracker.web import RX_EXAMPLE
 
 
@@ -153,3 +156,97 @@ def test_missing_days_use_catalog_defaults_with_a_note():
 def test_weird_input_does_not_crash():
     for text in ["", "   ", "hello", "Take 2", "8 mg", "every 6 hours", "💊💊", "Days 99 to 1", "q" * 500]:
         rxparse.parse(text)
+
+
+# ---------------------------------------------------------------- safety audit: frequency, days, limits, units
+
+
+@pytest.mark.parametrize("sig,expected", [
+    # "N times a day" is a frequency, never "for 1 day"; named times that add up to the count are used.
+    ("Take 1 tablet by mouth 4 times a day before meals and at bedtime for 5 days",
+     [("scheduled", 1, 5, ["08:00", "12:00", "18:00", "21:00"])]),
+    ("Swish and spit 15 mL four times a day", [("scheduled", 1, None, ["08:00", "12:00", "17:00", "21:00"])]),
+    ("Take 1 tablet twice a day, morning and evening", [("scheduled", 1, None, ["08:00", "18:00"])]),
+    # A count that disagrees with a named time keeps the count (and says so).
+    ("Take 1 tablet twice daily at bedtime", [("scheduled", 1, None, ["08:00", "20:00"])]),
+    # Day anchors joined by "and" or commas.
+    ("Take 2 tablets twice daily the day before, the day of and the day after chemo", [("scheduled", 0, 2, ["08:00", "20:00"])]),
+    ("Take 2 tablets the night before and 2 tablets the morning of chemo",
+     [("scheduled", 0, 0, ["21:00"]), ("scheduled", 1, 1, ["08:00"])]),
+    # Never a dose every day when the label spaces doses further apart.
+    ("Apply 1 patch every 3 days", [("scheduled", 1, 1, ["08:00"])]),
+    ("Take 1 tablet every other day", [("scheduled", 1, 1, ["08:00"])]),
+    ("Take 1 tablet weekly", [("scheduled", 1, 1, ["08:00"])]),
+    # The as-needed step after "then" carries on from the next day.
+    ("Take 1 tablet every 8 hours for 2 days, then as needed",
+     [("scheduled", 1, 2, ["06:00", "14:00", "22:00"]), ("as_needed", 3, None, [])]),
+])
+def test_frequency_and_days_follow_the_label(sig, expected):
+    assert spans(one("Examplemide 10 mg tab - " + sig)) == expected
+
+
+def test_guesses_the_reader_makes_come_with_a_note():
+    notes = one("Examplemide 10 mg tab - Apply 1 patch every 3 days").notes
+    assert any("every 3 days" in n and "only the first one" in n for n in notes)
+    assert any("twice a day and also \"at bedtime\"" in n for n in one("Examplemide 10 mg tab - Take 1 tablet twice daily at bedtime").notes)
+    assert any("Not on chemo day" in n for n in one("Examplemide 10 mg tab - Take 1 tablet daily, not on chemo day").notes)
+    dex = one("Dexamethasone 4 mg tab - Take 5 tablets (20 mg) by mouth 12 and 6 hours before chemo")
+    assert [(p.start_day, p.times) for p in dex.plans] == [(0, ["21:00"]), (1, ["03:00"])]
+    assert any("guessed 9:00 AM" in n for n in dex.notes)
+
+
+@pytest.mark.parametrize("sig,limit", [
+    ("Take 1 tablet every 4 hours as needed, not more than 3 tablets a day", 3),
+    ("Take 1 tablet every 4 hours as needed, never more than 3 tablets a day", 3),
+    ("Take 1 tablet every 4 hours as needed, at most 3 tablets a day", 3),
+    ("Take 1 tablet every 4 hours as needed. Max 3 tablets/day", 3),
+    ("Take 1 tablet every 4 hours as needed, no more than 3 a day", 3),
+    ("Take 2 tablets every 6 hours as needed. Do not exceed 8 tablets in 24 hours", 4),
+    # A limit in mg becomes doses only when one dose is known in mg (10 mg tablets here).
+    ("Take 1 tablet every 6 hours as needed. Do not exceed 40 mg per day", 4),
+    ("Take 2 tablets every 6 hours as needed. Do not take more than 3,000 mg a day", 150),
+    ("Take 20 mg every 6 hours as needed. Do not exceed 60 mg per day", 3),
+    ("Take 1 tablet every 6 hours as needed. Do not exceed 1 g per day", 100),
+    # Can't be counted: dose varies, or one dose has no known mg. Left empty with a note.
+    ("Take 1-2 tablets every 6 hours as needed. Do not exceed 60 mg per day", None),
+    ("Take 5 mL every 6 hours as needed. Do not exceed 40 mg per day", None),
+])
+def test_daily_limits_are_counted_in_doses(sig, limit):
+    m = one("Examplemide 10 mg tab - " + sig)
+    assert m.max_per_day == limit
+    if limit is None:
+        assert any("Label limit" in n for n in m.notes)
+
+
+def test_a_dose_unit_that_contradicts_the_strength_is_left_empty():
+    m = one("Filgrastim 300 mcg/0.5 mL syringe - Inject 300 mg under the skin daily on days 2 to 8")
+    assert m.dose is None and any("300 mcg" in n and "300 mg" in n for n in m.notes)
+    assert one("Examplemide 500 mg tab - Take 0.5 g by mouth daily").dose == "0.5 g"
+    assert not any("strength" in n for n in one("Examplemide 500 mg tab - Take 0.5 g by mouth daily").notes)
+
+
+def test_on_body_injector_has_no_fridge_step():
+    m = one("Pegfilgrastim 6 mg/0.6 mL on-body injector - Delivers the dose about 27 hours after it is applied")
+    assert (m.brand, m.no_prep, m.prep_minutes, m.plans[0].label) == ("Neulasta Onpro", True, None, "On-body injector")
+    syringe = one("Pegfilgrastim 6 mg/0.6 mL syringe - Inject 6 mg under the skin once on day 2")
+    assert not syringe.no_prep and syringe.brand == "Neulasta"
+
+
+@pytest.mark.parametrize("text", [
+    "Dexamethasone 4 mg tablet - Take 2 tablets the night before chemo and 2 tablets the morning of chemo",
+    "Dexamethasone 4 mg tablet - Take 5 tablets (20 mg) by mouth 12 hours and 6 hours before chemo",
+    "Dexamethasone 4 mg tablet - Take 1 tablet every 6 hours x 4 doses starting the night before chemo",
+    "Ondansetron 8 mg tablet - Take 1 tablet by mouth 8 times a day",
+    "Ondansetron 8 mg tablet - Take 1 tablet by mouth every 8 hours for 2 days, then every 8 hours as needed",
+    "Fentanyl 25 mcg/hr patch - Apply 1 patch to the skin every 72 hours",
+    "Ondansetron 8 mg tablet - Take 8 mcg by mouth every 8 hours as needed",
+    "Examplemide 10 mg tab - Take 1 tablet daily x 99 doses",
+])
+def test_new_readings_show_on_the_preview_and_save(client, cfg, text):
+    m = one(text)
+    page = client.post("/rx/preview", data={"rx_text": text})
+    assert page.status_code == 200 and all(n in html.unescape(page.text) for n in m.notes)
+    with session(cfg.db_path, write=True) as conn:
+        saved = store.plans(conn, store.import_parsed(conn, m, None))
+    assert sorted((p["kind"], p["start_day"], p["times"] or "") for p in saved) == \
+        sorted((p.kind, p.start_day, ",".join(p.times)) for p in m.plans)

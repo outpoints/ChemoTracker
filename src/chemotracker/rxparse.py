@@ -48,6 +48,8 @@ NUMBER_WORDS = {
 }
 _NUMWORD = r"(?:one[- ]half|twenty[- ](?:one|four|eight)|zero|an?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fourteen|fifteen|sixteen|twenty|thirty|half)"
 NUM = rf"(?:\d+\s*/\s*\d+|\d+(?:\.\d+)?|{_NUMWORD}\b)"
+# A count of days or doses. "a"/"an" never count here: "3 times a day" is not "for 1 day".
+NUM_COUNT = rf"(?:\d+(?:\.\d+)?|(?!an?\b){_NUMWORD}\b)"
 
 SALTS = {
     "hcl", "hci", "hydrochloride", "maleate", "mesylate", "sodium", "potassium", "phosphate", "sulfate",
@@ -74,6 +76,7 @@ UNIT_WORDS = {
     "capsule": "capsule", "capsules": "capsule", "cap": "capsule", "caps": "capsule",
     "ml": "mL", "milliliter": "mL", "milliliters": "mL", "cc": "mL",
     "mg": "mg", "mcg": "mcg", "ug": "mcg", "µg": "mcg", "g": "g", "gm": "g", "gram": "g", "grams": "g",
+    "milligram": "mg", "milligrams": "mg", "microgram": "mcg", "micrograms": "mcg",
     "unit": "unit", "units": "unit", "puff": "puff", "puffs": "puff", "spray": "spray", "sprays": "spray",
     "drop": "drop", "drops": "drop", "packet": "packet", "packets": "packet", "capful": "capful", "capfuls": "capful",
     "teaspoon": "teaspoon", "teaspoons": "teaspoon", "tsp": "teaspoon", "tablespoon": "tablespoon",
@@ -116,6 +119,18 @@ PRN = re.compile(r"\b(?:as needed|prn|p\.r\.n\.?|if needed|when needed|as requir
 INDICATION_ABBREV = {"n/v": "nausea or vomiting", "n&v": "nausea or vomiting", "n+v": "nausea or vomiting", "nv": "nausea or vomiting",
                      "cinv": "nausea or vomiting", "sob": "shortness of breath", "ha": "headache"}
 CHEMO = r"(?:chemo(?:therapy)?|treatment|infusion|your infusion|your chemo(?:therapy)?|your treatment)"
+_HNUM = r"(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty-four)"
+# "12 hours and 6 hours before chemo", "12 and 6 hours before chemo": one dose per number.
+HOURS_BEFORE = re.compile(rf"\b((?:{_HNUM}\s*(?:hours?|hrs?|h)?\s*(?:,\s*(?:and\s+)?|and\s+|&\s*))*{_HNUM})\s*(?:hours?|hrs?|h)\s+"
+                          rf"(?:before|prior to)\s+(?:the start of\s+)?(?:your |each |the )?{CHEMO}\b")
+# "x 4 doses", "for 6 doses", "4 doses in total".
+DOSE_COUNT = re.compile(rf"(?:\b(?:x|times|for|total of)|×)\s*({NUM_COUNT})\s*(?:total\s+)?doses?\b|\b({NUM_COUNT})\s+doses?\s+(?:in\s+)?(?:total|in all)\b")
+# "the day before, the day of and the day after chemo": one schedule over Days 0, 1 and 2.
+DAY_LIST = re.compile(rf"\b(?:the\s+)?day\s+(?:before|of|after)(?:\s*(?:,\s*(?:and\s+)?|and\s+|&\s*)(?:the\s+)?day\s+(?:before|of|after))+"
+                      rf"\s+(?:your |each )?{CHEMO}\b", re.I)
+ANCHOR = r"(?:the\s+)?(?:night|evening|morning|day)\s+(?:before|of|after)\b"
+# "2 tablets the night before chemo and 2 tablets the morning of chemo": split before the second anchor.
+ANCHOR_AND = re.compile(rf"\s*,?\s*(?:\band\b|&)\s*(?=(?:(?:take|give|use|then)\s+)?(?:{NUM}\s*[a-z]*\s*(?:\([^)]*\)\s*)?)?(?:on\s+|in\s+)?{ANCHOR})", re.I)
 
 SLOT_TIMES = {"morning": "08:00", "breakfast": "08:00", "noon": "12:00", "lunch": "12:00", "afternoon": "14:00",
               "evening": "18:00", "dinner": "18:00", "supper": "18:00", "bedtime": "21:00"}
@@ -134,6 +149,19 @@ PER_DAY = [
     (r"\bonce (?:a |per |each )?(?:day|daily)\b|\bone time (?:a|per|each) day\b|\bdaily\b|\bevery day\b|\beach day\b|\bqd\b|\bq\.d\.?\b|\bq ?day\b|\bq24h?\b|\bonce\s+every\s+day\b", 1),
 ]
 PER_DAY_TIMES = {1: ["08:00"], 2: ["08:00", "20:00"], 3: ["08:00", "14:00", "20:00"], 4: ["08:00", "12:00", "17:00", "21:00"]}
+# "8 times a day", "five times daily", "3x a day": any count, read before the fixed patterns above.
+PER_DAY_N = re.compile(r"\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*(?:x|times?)\s*"
+                       r"(?:(?:a|per|each|every)\s+day|daily)\b")
+# A negated clause ("do not take at bedtime") must never become a time, day or frequency.
+NEGATION = re.compile(r"\b(?:do not|don'?t|never|avoid|not)\b[^.;,]*", re.I)
+TIME_WORDS = re.compile(r"bed ?time|\bnight|\bmorning|\bevening|\bnoon|\bhs\b|\bqhs\b|\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\b", re.I)
+DAY_WORDS = re.compile(r"\bon\b[^.;,]*\b(?:days?|chemo(?:therapy)?|treatment|infusion)\b", re.I)
+# Words that mean taken on a schedule, never "only if needed".
+ATC = re.compile(r"\b(?:a?round[- ]the[- ]clock|atc|on a schedule|regularly|scheduled(?!\s+(?:chemo|treatment|infusion|appointment|visit)))\b", re.I)
+# Without a chemo start time on the label, "N hours before chemo" is counted back from this guess (and says so).
+CHEMO_START = "09:00"
+MASS = {"mcg": 0.001, "mg": 1.0, "g": 1000.0}
+COUNT_UNITS = {"tablet", "capsule", "patch", "packet", "suppository", "puff", "spray", "drop", "capful", "syringe", "injection"}
 
 NOISE = [
     r"^\s*(?:rx|rx\s*#|rx\s*no\.?|rx:)\b", r"\bqty\b|\bquantity\b|\bdisp(?:ense)?\b\s*:", r"\brefills?\b|\bno refills\b",
@@ -194,6 +222,8 @@ class ParsedMed:
     indication: str | None = None
     prep_minutes: int | None = None
     prep_note: str | None = None
+    # The label says there's no step before a dose (on-body injector), so a catalog fridge reminder doesn't apply.
+    no_prep: bool = False
 
     @property
     def kind(self) -> str:
@@ -246,6 +276,7 @@ def normalize(text: str) -> str:
     t = t.replace("½", " 1/2").replace("¼", " 1/4").replace("¾", " 3/4")
     t = re.sub(r"[“”]", '"', t).replace("’", "'")
     t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)  # "3,000 mg" is 3000 mg
     return t
 
 
@@ -500,13 +531,19 @@ def _runs(days: list[int]) -> list[tuple[int, int]]:
 @dataclass
 class _Seg:
     text: str
+    clean: str = ""  # lower case, negated clauses removed
     qty: tuple[float, float] | None = None
     qty_unit: str | None = None
     per_day: int | None = None
     interval: tuple[float, float] | None = None
+    gap_text: str = ""  # "every 3 days" when the label says it in days
     times: list[str] = field(default_factory=list)
+    has_clock: bool = False
+    timing_all: list[str] = field(default_factory=list)
+    timing_words: list = field(default_factory=list)
     slot: str | None = None
     prn: bool = False
+    atc: bool = False
     days: list[int] = field(default_factory=list)
     start: int | None = None
     length: int | None = None
@@ -514,6 +551,10 @@ class _Seg:
     once: bool = False
     weekly: bool = False
     every_other: bool = False
+    n_doses: int | None = None
+    hours_before: list[float] = field(default_factory=list)
+    points: list[tuple[int, str, str]] = field(default_factory=list)  # (cycle day, "HH:MM", label) for each dose
+    negations: list[str] = field(default_factory=list)
 
 
 def _clock(text: str) -> list[str]:
@@ -526,9 +567,58 @@ def _clock(text: str) -> list[str]:
     return out
 
 
+def _minutes(hm: str) -> int:
+    h, m = hm.split(":")
+    return int(h) * 60 + int(m)
+
+
+def _hm(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _ampm(hm: str) -> str:
+    h, m = (int(x) for x in hm.split(":"))
+    return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+
+
+def _join(items) -> str:
+    items = list(items)
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _span(start: int, end: int | None) -> str:
+    if end is None:
+        return "every day of the cycle" if start <= 1 else f"Day {start} to the end of the cycle"
+    return f"Day {start}" if start == end else f"Days {start}–{end}"
+
+
+def _points_text(points: list[tuple[int, str, str]]) -> str:
+    by_day: dict[int, list[str]] = {}
+    for day, hm, _ in points:
+        by_day.setdefault(day, []).append(_ampm(hm))
+    return ", then ".join(f"{_join(times)} on Day {day}" for day, times in by_day.items())
+
+
+def _spread_times(n: int) -> list[str]:
+    """n doses a day. Up to 4 use the Universal Medication Schedule; more are spread from 8 AM to 10 PM."""
+    if n in PER_DAY_TIMES:
+        return list(PER_DAY_TIMES[n])
+    n = min(n, 24)
+    step = 14 * 60 / (n - 1)
+    return sorted({_hm(int(round((8 * 60 + i * step) / 15) * 15)) for i in range(n)})
+
+
 def _parse_segment(text: str) -> _Seg:
-    t = " " + text.lower() + " "
     seg = _Seg(text=text)
+    raw = " " + text.lower() + " "
+    shown = " " + text + " "
+    for neg in NEGATION.finditer(raw):
+        clause = shown[neg.start():neg.end()] if len(shown) == len(raw) else neg.group(0)
+        seg.negations.append(clause.strip(" ,;."))
+    t = NEGATION.sub(" ", raw)
+    seg.clean = t
     m = re.search(rf"\b{VERBS}\s+({NUM})(?:\s*(?:-|to|or)\s*({NUM}))?\s*([a-zµ]+)?", t)
     if not m:
         m = re.search(rf"(?:^|\s)({NUM})(?:\s*(?:-|to|or)\s*({NUM}))?\s*(tablets?|tabs?|capsules?|caps?|pills?|ml|mg|mcg|g|units?|puffs?|drops?|packets?|patch(?:es)?|syringes?)\b", t)
@@ -536,9 +626,8 @@ def _parse_segment(text: str) -> _Seg:
         a, b = _num(m.group(1)), _num(m.group(2)) if m.group(2) else None
         unit = UNIT_WORDS.get((m.group(3) or "").lower())
         if a is not None and (unit or re.match(rf"\s*{VERBS}", m.group(0))):
-            if not (unit is None and m.group(3) in ("by", "under", "on", "at", "every", "daily", "twice")) or True:
-                seg.qty = (a, b if b is not None else a)
-                seg.qty_unit = unit
+            seg.qty = (a, b if b is not None else a)
+            seg.qty_unit = unit
     iv = re.search(rf"\b(?:every|q\.?)\s*({NUM})\s*(?:(?:-|to|or)\s*({NUM})\s*)?(?:hours?|hrs?|h)\b", t)
     if not iv:
         iv = re.search(r"\bq\s?(\d+)(?:\s?-\s?(\d+))?\s?h(?:r|rs|ours?)?\b", t)
@@ -548,20 +637,37 @@ def _parse_segment(text: str) -> _Seg:
             seg.interval = (lo, hi or lo)
     elif re.search(r"\bevery hour\b|\bhourly\b", t):
         seg.interval = (1.0, 1.0)
-    for pattern, n in PER_DAY:
-        if re.search(pattern, t):
-            seg.per_day = n
-            break
-    times_hm = _clock(text)
+    every_days = re.search(r"\bevery\s+(2|3|4|5|6|two|three|four|five|six)\s+days\b|\bq\s?([2-6])\s?d(?:ays)?\b", t)
+    if every_days and not seg.interval:
+        n = _num(every_days.group(1) or every_days.group(2))
+        if n:
+            seg.interval = (n * 24, n * 24)
+            seg.gap_text = every_days.group(0).strip()
+    count = PER_DAY_N.search(t)
+    if count and _num(count.group(1)):
+        seg.per_day = int(_num(count.group(1)) or 1)
+    else:
+        for pattern, n in PER_DAY:
+            if re.search(pattern, t):
+                seg.per_day = n
+                break
+    times_hm = _clock(t)
     if times_hm:
         seg.times = times_hm
+        seg.has_clock = True
     for pattern, times, slot in TIMING:
-        if re.search(pattern, t):
-            if not seg.times:
-                seg.times = list(times)
-            seg.slot = slot or seg.slot
-            break
+        found = re.search(pattern, t)
+        if found:
+            if not seg.timing_words:  # the first one named sets the time, as before
+                if not seg.times:
+                    seg.times = list(times)
+                seg.slot = slot or seg.slot
+            seg.timing_words.append((times[0], found.group(0).strip()))
+            seg.timing_all.extend(times)
+    seg.timing_all = sorted(set(seg.timing_all))
+    seg.timing_words = [word for _, word in sorted(seg.timing_words)]  # in clock order: "in the morning and at bedtime"
     seg.prn = bool(PRN.search(t))
+    seg.atc = bool(ATC.search(t))
     seg.weekly = bool(re.search(r"\b(?:weekly|once a week|every week|q ?wk|q ?week)\b", t))
     seg.every_other = bool(re.search(r"\bevery other day\b|\bqod\b|\balternate days\b", t))
     seg.once = bool(re.search(r"\b(?:once|one time|single dose|x ?1 dose|one dose)\b(?! ?(?:a|per|each|daily|every|weekly))", t))
@@ -569,6 +675,9 @@ def _parse_segment(text: str) -> _Seg:
     m = re.search(r"\bdays?\s+(\d+(?:(?:\s*(?:,|\band\b|&|\bor\b|\bto\b|\bthrough\b|\bthru\b|-)\s*)+(?:days?\s+)?\d+)*)", t)
     if m:
         seg.days = _days_from_list(m.group(1))
+    listed = DAY_LIST.search(t)
+    if listed and not seg.days:
+        seg.days = sorted({{"before": 0, "of": 1, "after": 2}[w] for w in re.findall(r"day\s+(before|of|after)", listed.group(0))})
     # Anchors relative to chemo day (Day 1).
     if re.search(rf"\b(?:the )?(?:day|night|evening) before (?:your |each )?{CHEMO}", t):
         seg.start = 0
@@ -582,9 +691,11 @@ def _parse_segment(text: str) -> _Seg:
         seg.start = 1
         if re.search(r"\bmorning of\b", t) and not seg.times:
             seg.times = ["08:00"]
-    m = re.search(rf"\b(?:starting|beginning|start)?\s*(?:on )?(?:the )?day after (?:your |each )?{CHEMO}\b", t)
+    m = re.search(rf"\b(?:starting|beginning|start)?\s*(?:on )?(?:the )?(day|morning) after (?:your |each )?{CHEMO}\b", t)
     if m and seg.start is None:
         seg.start = 2
+        if m.group(1) == "morning" and not seg.times:
+            seg.times = ["08:00"]
     m = re.search(rf"\b({NUM})\s*(?:full )?days? (?:after|following) (?:your |each )?{CHEMO}\b", t)
     if m and seg.start is None and not seg.days:
         n = _num(m.group(1))
@@ -601,29 +712,62 @@ def _parse_segment(text: str) -> _Seg:
     if m and seg.start is None:
         seg.start = int(m.group(1))
         seg.days = []
-    m = re.search(rf"\b(?:for|x|times|×)\s*({NUM})(?:\s*(?:-|to|or)\s*({NUM}))?\s*(?:more |total |additional |consecutive )?days?\b", t)
+    m = re.search(rf"\b(?:for|x|times|×)\s*({NUM_COUNT})(?:\s*(?:-|to|or)\s*({NUM_COUNT}))?\s*(?:more |total |additional |consecutive )?days?\b", t)
     if not m:
-        m = re.search(rf"\b(?:for|x)\s*({NUM})(?:\s*(?:-|to)\s*({NUM}))?\s*(?:d)\b", t)
+        m = re.search(rf"\b(?:for|x)\s*({NUM_COUNT})(?:\s*(?:-|to)\s*({NUM_COUNT}))?\s*(?:d)\b", t)
     if m:
         lo, hi = _num(m.group(1)), _num(m.group(2)) if m.group(2) else None
         if lo:
             seg.length = int(hi or lo)
             seg.length_range = hi is not None and hi != lo
+    dc = DOSE_COUNT.search(t)
+    if dc:
+        n = _num(dc.group(1) or dc.group(2))
+        if n and n >= 2 and n == int(n):
+            seg.n_doses = int(n)
+    hb = HOURS_BEFORE.search(t)
+    if hb:
+        offsets = [h for h in (_num(x) for x in re.findall(rf"\b{_HNUM}\b", hb.group(1))) if h]
+        if len(offsets) >= 2 or (offsets and offsets[0] >= 2):
+            start = _minutes(CHEMO_START)
+            points = []
+            for h in offsets:
+                total = start - int(round(h * 60))
+                points.append((1 + total // 1440, _hm(total % 1440), f"{_fmt(h)} {'hour' if h == 1 else 'hours'} before chemo"))
+            if all(day >= 0 for day, _, _ in points):
+                seg.hours_before = offsets
+                seg.points = sorted(points)
     return seg
 
 
 def _split_then(directions: str) -> list[str]:
-    parts = re.split(r"[,;.]?\s*\b(?:and )?then\b\s*(?!stop\b|discontinue\b|as\b)", directions, flags=re.I)
+    parts = re.split(r"[,;.]?\s*\b(?:and )?then\b\s*(?!stop\b|discontinue\b|as directed\b)", directions, flags=re.I)
     out = []
     for p in parts:
         p = p.strip(" ,;.")
         if not p:
             continue
-        if out and not re.search(rf"{VERBS}|\d|daily|twice|once|times|every|bedtime|morning|evening|day", p, re.I):
+        if out and not re.search(rf"{VERBS}|\d|daily|twice|once|times|every|bedtime|morning|evening|day|as needed|\bprn\b|if needed", p, re.I):
             out[-1] = out[-1] + " then " + p
         else:
             out.append(p)
     return out or [directions]
+
+
+def _split_anchors(step: str) -> list[str]:
+    """'2 tablets the night before chemo and 2 tablets the morning of chemo' is two doses, one per anchor."""
+    if DAY_LIST.search(step):
+        return [step]
+    pieces = [p.strip(" ,;.") for p in ANCHOR_AND.split(step) if p.strip(" ,;.")]
+    if len(pieces) < 2 or not all(re.search(ANCHOR, p, re.I) for p in pieces):
+        return [step]
+    if re.search(rf"\b{CHEMO}\b", pieces[-1], re.I):  # "the night before and the morning of chemo"
+        pieces = [p if re.search(rf"{ANCHOR}\s+(?:your |each )?{CHEMO}", p, re.I) else f"{p} chemo" for p in pieces]
+    return pieces
+
+
+def _split_steps(directions: str) -> list[str]:
+    return [piece for step in _split_then(directions) for piece in _split_anchors(step)]
 
 
 # ---------------------------------------------------------------- whole medicine
@@ -656,10 +800,95 @@ def _dose_text(qty: tuple[float, float] | None, unit: str | None, label: dict, f
     return text
 
 
+def _dose_conflict(qty: tuple[float, float] | None, unit: str | None, label: dict) -> str | None:
+    """A note when the dose's unit can't be right for the strength ("8 mcg" of an 8 mg tablet). Units are never changed."""
+    strength, s_unit = label.get("strength_value"), label.get("strength_unit")
+    if not qty or unit not in MASS or not strength or s_unit not in MASS:
+        return None
+    lo = qty[0] * MASS[unit] / (strength * MASS[s_unit])
+    hi = qty[1] * MASS[unit] / (strength * MASS[s_unit])
+    if 0.01 <= lo and hi <= 100:
+        return None
+    amount = _measure(qty[0]) if qty[0] == qty[1] else f"{_measure(qty[0])}–{_measure(qty[1])}"
+    return (f"The label strength is {_measure(strength)} {s_unit}, but the dose says {amount} {unit}. "
+            "The app left the dose empty. Check the label and fill it in on the medicine page.")
+
+
+def _per_dose_in(unit: str, qty: tuple[float, float] | None, qty_unit: str | None, label: dict) -> float | None:
+    """How much one dose is in the unit a daily limit uses, or None when the label doesn't say exactly."""
+    if not qty or qty[0] != qty[1]:
+        return None
+    n = qty[0]
+    dose_unit = None if qty_unit in (None, "dose") else qty_unit
+    strength, s_unit = label.get("strength_value"), label.get("strength_unit")
+    each = strength if strength and s_unit in MASS and "/" not in (label.get("strength") or "") else None
+    if dose_unit == unit or (dose_unit is None and unit in COUNT_UNITS):
+        return n
+    if unit in MASS:
+        if dose_unit in MASS:
+            return n * MASS[dose_unit] / MASS[unit]
+        if (dose_unit is None or dose_unit in COUNT_UNITS) and each:
+            return n * each * MASS[s_unit] / MASS[unit]
+        return None
+    if unit in COUNT_UNITS and dose_unit in MASS and each:
+        units = n * MASS[dose_unit] / (each * MASS[s_unit])
+        return units if abs(units * 4 - round(units * 4)) < 1e-9 else None
+    return None
+
+
+def _unit_text(unit: str, amount: float) -> str:
+    if unit in COUNT_UNITS and amount != 1:
+        return PLURAL.get(unit, unit + "s")
+    return unit
+
+
 def _interval_times(hours: float) -> list[str]:
     n = max(1, min(int(round(24 / hours)), 6))
     start = 8 if hours >= 12 else 6
     return sorted({f"{int((start + i * hours) % 24):02d}:00" for i in range(n)})
+
+
+def _dose_points(s: _Seg, start_day: int) -> list[tuple[int, str, str]]:
+    """Each of 'x N doses', from the first day and time, at the label's interval or times a day."""
+    n = s.n_doses or 0
+    if s.interval and s.interval[0] <= 24:
+        first = _minutes(s.times[0] if s.times else _interval_times(s.interval[0])[0])
+        totals = [first + int(round(k * s.interval[0] * 60)) for k in range(n)]
+        return [(start_day + total // 1440, _hm(total % 1440), "") for total in totals]
+    if s.per_day:
+        times = s.times if len(s.times) == s.per_day else _spread_times(s.per_day)
+        points: list[tuple[int, str, str]] = []
+        day = start_day
+        while len(points) < n:
+            points.extend((day, hm, "") for hm in times[: n - len(points)])
+            day += 1
+        return points
+    return []
+
+
+def _plan_label(s: _Seg, kind: str, med: ParsedMed, full: str, times: list[str], onbody: bool) -> str:
+    bits = []
+    if kind == "as_needed":
+        bits.append(f"As needed for {med.indication}" if med.indication else "As needed")
+    elif onbody:
+        bits.append("On-body injector")
+    elif (s.slot == "bedtime" or re.search(r"\bbed ?time\b|\bqhs\b|\bat night\b", s.clean)) and times in ([], ["21:00"]):
+        bits.append("At bedtime")
+    food = re.search(r"\b(with food|with (?:a )?meals?|with milk|on an empty stomach|with (?:a full )?glass of water|after (?:a )?meals?|before meals)\b", s.clean)
+    if food:
+        bits.append(food.group(1).capitalize() if not bits else food.group(1))
+    before = re.search(rf"\b(\d+|one|two|thirty|30|45|60)\s*(hours?|hrs?|minutes?|mins?)\s+(?:before|prior to)\s+(?:your |each )?{CHEMO}", s.clean)
+    if before and kind != "as_needed":
+        bits.append(f"{before.group(1)} {before.group(2)} before chemo")
+    if med.route == "injection" and kind != "clinic" and not bits:
+        bits.append("Shot under the skin" if re.search(r"subcut|under the skin|sub-?q|\bsq\b|\bsc\b", full, re.I) else "Injection")
+    return " ".join(bits)[:60]
+
+
+LIMIT = re.compile(
+    rf"(?:(?:do not|don'?t)\s+(?:take|use|give)\s+more\s+than|(?:do not|don'?t)\s+exceed|not\s+to\s+exceed|(?:no|not|never)\s+more\s+than"
+    rf"|at\s+most|max(?:imum)?(?:\s+of)?|up\s+to)\s+({NUM})\s*([a-z]+)?\s*(?:in|per|a|each|every|within|/)?\s*"
+    rf"(?:24\s*h(?:ours?|rs?)?|day|daily|period of 24)")
 
 
 def parse_medicine(head: str, directions: str) -> ParsedMed:
@@ -677,6 +906,10 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
     med.info_key = key
     med.matched_by = matched_by
     med.brand = brand or (info.brands[0] if info and info.brands else None)
+    # Pegfilgrastim on-body injector: the clinic puts it on and it gives the dose by itself about 27 hours later.
+    onbody = key == "pegfilgrastim" and bool(re.search(r"\bon[- ]?body\b|\bonpro\b", full, re.I))
+    if onbody and (brand is None or brand.lower() == "neulasta"):
+        med.brand = "Neulasta Onpro"
     med.name = info.generic if info else (label["name"].title() if label["name"] else "")
     if not med.name:
         med.notes.append("Couldn't find the medicine name. Type it in.")
@@ -699,10 +932,12 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
     cyc = re.search(r"(?:of|in) (?:each|every|a|the|your)\s+(\d+)[- ]?day (?:treatment )?cycle|\bevery (\d+) days\b|\bq ?(\d+) ?d(?:ays)?\b|\bq ?([1-4]) ?w(?:ee)?ks?\b", directions.lower())
     if cyc:
         n = next(int(g) for g in cyc.groups() if g)
-        med.cycle_hint = n * 7 if cyc.group(4) else n
-    mx = re.search(rf"(?:do not (?:take more than|exceed|use more than)|not to exceed|no more than|max(?:imum)?(?: of)?|up to)\s+({NUM})\s*([a-z]+)?\s*(?:in|per|a|each|every|within)?\s*(?:24\s*h(?:ours?|rs?)?|day|daily|period of 24)", directions.lower())
+        hint = n * 7 if cyc.group(4) else n
+        if hint >= 7:  # "every 3 days" is how often a dose is given, not a cycle
+            med.cycle_hint = hint
+    mx = LIMIT.search(directions.lower())
 
-    segs = [_parse_segment(s) for s in _split_then(directions or "")] if directions else [_Seg(text="")]
+    segs = [_parse_segment(s) for s in _split_steps(directions)] if directions else [_Seg(text="")]
     if re.search(rf"\bclinic\b|\bin (?:the )?(?:infusion|treatment) (?:center|room|suite)\b|\bby (?:your|the) nurse\b|\binfus", full, re.I) or med.route == "iv":
         base_kind = "clinic"
     else:
@@ -715,6 +950,10 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
     elif med.dose is None and label.get("strength") and not label.get("form") and "/" not in label["strength"]:
         # Protocol style ("olanzapine 5 mg PO daily"): the number is the dose, not the tablet size.
         med.dose, med.strength = label["strength"], None
+    conflict = _dose_conflict(first_qty, first_unit, label)
+    if conflict:
+        med.dose = None
+        med.notes.append(conflict)
 
     any_prn = any(s.prn for s in segs)
     any_interval = next((s.interval for s in segs if s.interval), None)
@@ -723,24 +962,64 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
     plans: list[ParsedPlan] = []
     used_default_days = False
     qtys = {s.qty for s in segs if s.qty}
-    if len(segs) > 1 and not base_kind and (any_prn or default_kind == "as_needed") and not any(
-            s.per_day or s.times for s in segs[1:]):
+    # A step with its own frequency and days that isn't "as needed" is a real schedule ("every 8 hours for 2 days,
+    # then every 8 hours as needed"). Keep the steps apart then, or the scheduled part turns into as needed.
+    scheduled_step = any(not s.prn and (s.interval or s.per_day or s.times or s.points)
+                         and (s.days or s.length or s.start is not None or s.n_doses or s.points) for s in segs)
+    if (len(segs) > 1 and not base_kind and (any_prn or default_kind == "as_needed") and not scheduled_step
+            and not any(s.per_day or s.times for s in segs[1:])):
         # "2 capsules after the first loose stool, then 1 after each" is one as-needed medicine, not two schedules.
         merged = _parse_segment(directions)
         merged.prn = True
         segs = [merged]
-    for i, s in enumerate(segs):
+    for s in segs:
         if base_kind:
             kind = "clinic"
         elif s.prn or (any_prn and len(segs) == 1):
             kind = "as_needed"
-        elif s.interval and not s.per_day and not s.times and not s.once and default_kind == "as_needed":
+        elif (s.interval and not s.per_day and not s.times and not s.once and not s.atc and not s.n_doses
+              and len(segs) == 1 and default_kind == "as_needed"):
             kind = "as_needed"
             med.notes.append(
                 f"Label says every {_fmt(s.interval[0])} hours, not \"as needed\". Set as needed, at least "
                 f"{_fmt(s.interval[0])} hours apart. Change it if you were told to take it around the clock.")
         else:
             kind = "scheduled"
+        seg_dose = _dose_text(s.qty, s.qty_unit or first_unit, label, label["form"]) if (len(segs) > 1 and s.qty) else ""
+        if seg_dose and _dose_conflict(s.qty, s.qty_unit or first_unit, label):
+            seg_dose = ""
+        # Doses placed one by one: "12 hours and 6 hours before chemo", "every 6 hours x 4 doses".
+        points = s.points if kind == "scheduled" else []
+        if kind == "scheduled" and not points and s.n_doses:
+            start = s.days[0] if s.days else (s.start if s.start is not None else (
+                prev_end + 1 if prev_end is not None else (info.defaults.days[0] if info else 1)))
+            points = _dose_points(s, start)
+            if points and max(day for day, _, _ in points) > 90:  # past what a cycle can hold
+                points = []
+            if points:
+                med.notes.append(f"Label says {s.n_doses} doses. The app set them for {_points_text(points)}. "
+                                 "Change the times if you were told others.")
+                if not s.days and s.start is None and prev_end is None:
+                    med.notes.append(f"Start day isn't on the label, so this starts on {'chemo day (Day 1)' if start == 1 else f'Day {start}'}.")
+            else:
+                med.notes.append(f"Label says {s.n_doses} doses. The app couldn't tell when, so check the days and times.")
+        elif kind != "scheduled" and s.n_doses:
+            med.notes.append(f"Label says {s.n_doses} doses in all. The app can't count that for you, so keep track and follow the label.")
+        if points:
+            by_day: dict[int, list[tuple[str, str]]] = {}
+            for day, hm, lbl in points:
+                by_day.setdefault(day, []).append((hm, lbl))
+            for day, entries in sorted(by_day.items()):
+                times = sorted({hm for hm, _ in entries})
+                lbl = " and ".join(dict.fromkeys(x for _, x in entries if x)) or _plan_label(s, kind, med, full, times, onbody)
+                plans.append(ParsedPlan(kind=kind, start_day=day, end_day=day, times=times, label=lbl[:60],
+                                        dose=seg_dose or "", from_label=True))
+            prev_end = max(by_day)
+            if s.hours_before:
+                med.notes.append(
+                    f"Label says {_join([_fmt(h) for h in s.hours_before])} hours before chemo. The app doesn't know when chemo "
+                    f"starts, so it guessed {_ampm(CHEMO_START)} and set {_points_text(points)}. Change the times to fit your chemo time.")
+            continue
         # Days
         from_label = True
         if s.days:
@@ -763,7 +1042,18 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
             if s.length_range:
                 med.notes.append(f"Label gives a range of days. Using the longer one ({s.length} days).")
         elif prev_end is not None:
-            day_runs = [(prev_end + 1, prev_end + 1)]
+            start = prev_end + 1
+            from_label = False
+            if kind == "as_needed":
+                # "..., then every 8 hours as needed": as needed from the day after the step before.
+                end = info.defaults.days[1] if info and info.defaults.days[1] >= start else None
+                med.notes.append(f"The label doesn't say how long to keep it as needed, so this uses {_span(start, end)}. "
+                                 "Match it to your clinic's sheet.")
+            else:
+                end = start
+                med.notes.append(f"The label doesn't say how many days for the part after \"then\", so the app set one day "
+                                 f"(Day {start}). Change it to match the label.")
+            day_runs = [(start, end)]  # type: ignore[list-item]
         elif info:
             d0, d1 = info.defaults.days
             day_runs = [(d0, None if d1 == 0 else d1)]  # type: ignore[list-item]
@@ -773,51 +1063,71 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
             day_runs = [(1, None)]  # type: ignore[list-item]
             from_label = False
             used_default_days = True
+        # Every 72 hours, every other day, weekly: never a dose every day. Keep the first and say so.
+        collapsed = False
+        long_gap = bool(s.interval and s.interval[0] > 24)
+        if kind == "scheduled" and (long_gap or s.every_other or s.weekly) and any(e is None or e != b for b, e in day_runs):
+            first_day = day_runs[0][0]
+            day_runs = [(first_day, first_day)]
+            collapsed = True
+            if long_gap:
+                gap = s.gap_text or f"every {_fmt(s.interval[0])} hours"
+                med.notes.append(f"Label says {gap}. The app can't repeat a dose that far apart, so it "
+                                 f"set only the first one, on Day {first_day}. Add the next ones by hand, and follow the label.")
+            elif s.every_other:
+                med.notes.append(f"Label says every other day. The app set only the first one, on Day {first_day}. "
+                                 "Add the other days by hand.")
+            else:
+                med.notes.append(f"Label says weekly. The app set only Day {first_day}. Set the cycle to 7 days, or pick the day it's given.")
         # Times
         times: list[str] = []
+        named = ""
         if kind == "scheduled":
-            if s.times:
-                times = s.times
-            elif s.per_day:
-                times = PER_DAY_TIMES[min(s.per_day, 4)]
-                if s.per_day == 1 and info and info.defaults.times and info.defaults.kind == "scheduled":
-                    times = list(info.defaults.times)[:1]
+            if s.per_day and not s.has_clock:
+                if s.times and len(s.times) == s.per_day:
+                    times = list(s.times)
+                elif s.timing_all and len(s.timing_all) == s.per_day:  # "4 times a day before meals and at bedtime"
+                    times = list(s.timing_all)
+                    named = _join(s.timing_words) if len(s.timing_words) > 1 else ""
+                else:
+                    times = _spread_times(s.per_day)
+                    if s.per_day == 1 and info and info.defaults.times and info.defaults.kind == "scheduled":
+                        times = list(info.defaults.times)[:1]
+                    if s.per_day > 4:
+                        med.notes.append(f"Label says {s.per_day} times a day. The app spread them from 8:00 AM to 10:00 PM. "
+                                         "Change the times if you were told when to take them.")
+                    elif s.timing_words:
+                        count = {1: "once", 2: "twice"}.get(s.per_day, f"{s.per_day} times")
+                        med.notes.append(f"The label says {count} a day and also \"{_join(s.timing_words)}\". The app set "
+                                         f"{_join(_ampm(x) for x in times)}. Change the times to match the label.")
+            elif s.times:
+                times = list(s.times)
             elif s.interval:
                 times = _interval_times(s.interval[0])
             elif info and info.defaults.times:
                 times = list(info.defaults.times)
             else:
                 times = ["08:00"]
-        # Label
-        bits = []
-        if kind == "as_needed":
-            bits.append(f"As needed for {med.indication}" if med.indication else "As needed")
-        elif s.slot == "bedtime" or re.search(r"\bbed ?time\b|\bqhs\b|\bat night\b", s.text, re.I):
-            bits.append("At bedtime")
-        food = re.search(r"\b(with food|with (?:a )?meals?|with milk|on an empty stomach|with (?:a full )?glass of water|after (?:a )?meals?|before meals)\b", s.text, re.I)
-        if food:
-            bits.append(food.group(1).capitalize() if not bits else food.group(1))
-        before = re.search(rf"\b(\d+|one|two|thirty|30|45|60)\s*(hours?|hrs?|minutes?|mins?)\s+(?:before|prior to)\s+(?:your |each )?{CHEMO}", s.text, re.I)
-        if before and kind != "as_needed":
-            bits.append(f"{before.group(1)} {before.group(2)} before chemo")
-        if med.route == "injection" and kind != "clinic" and not bits:
-            bits.append("Shot under the skin" if re.search(r"subcut|under the skin|sub-?q|\bsq\b|\bsc\b", full, re.I) else "Injection")
-        seg_dose = _dose_text(s.qty, s.qty_unit or first_unit, label, label["form"]) if (len(segs) > 1 and s.qty) else ""
+        lbl = (named[:1].upper() + named[1:])[:60] if named else _plan_label(s, kind, med, full, times, onbody)
         for start, end in day_runs:
             plans.append(ParsedPlan(kind=kind, start_day=start, end_day=end, times=times,
-                                    label=" ".join(bits)[:60], dose=seg_dose or "", from_label=from_label))
+                                    label=lbl, dose=seg_dose or "", from_label=from_label))
         last_end = day_runs[-1][1]
         prev_end = last_end if last_end is not None else prev_end
-        if s.weekly:
+        if s.weekly and not collapsed:
             med.notes.append("Label says weekly. Set the cycle to 7 days, or pick the day it's given.")
-        if s.every_other:
+        if s.every_other and not collapsed:
             med.notes.append("Label says every other day. Pick the days it's taken.")
     if used_default_days and plans:
         p = plans[0]
-        span = "every day of the cycle" if p.end_day is None and p.start_day <= 1 else (
-            f"Day {p.start_day} to the end of the cycle" if p.end_day is None else
-            (f"Day {p.start_day}" if p.start_day == p.end_day else f"Days {p.start_day}–{p.end_day}"))
-        med.notes.append(f"Days aren't on the label, so this uses {span}. Match it to your clinic's sheet.")
+        med.notes.append(f"Days aren't on the label, so this uses {_span(p.start_day, p.end_day)}. Match it to your clinic's sheet.")
+    for s in segs:
+        for clause in s.negations:
+            said = clause[:1].upper() + clause[1:]
+            if DAY_WORDS.search(clause) and plans:  # "not on chemo day"
+                med.notes.append(f"The label says \"{said}\". Check that the days follow it.")
+            elif TIME_WORDS.search(clause) and any(p.kind == "scheduled" for p in plans):  # "do not take at bedtime"
+                med.notes.append(f"The label says \"{said}\". Check that the times follow it.")
     # Gap and limits for as-needed medicines.
     if any_interval and any(p.kind == "as_needed" for p in plans):
         med.min_hours_between = any_interval[0]
@@ -829,20 +1139,33 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
         unit = UNIT_WORDS.get((mx.group(2) or "").lower(), "")
         if limit:
             fixed = len(qtys) <= 1 and (not first_qty or first_qty[0] == first_qty[1])
-            per_dose = first_qty[0] if first_qty else 1
-            unit_word = unit if unit else "dose"
-            if unit in ("", "dose", "time") or (fixed and per_dose == 1):
+            if unit in ("", "dose"):
                 med.max_per_day = int(limit)
-            elif fixed and unit in ("tablet", "capsule", "mg", "mcg", "mL", "patch", "packet") and per_dose > 0:
-                med.max_per_day = max(1, int(limit // per_dose))
-                med.notes.append(f"Label limit: {_fmt(limit)} {unit_word}s a day. At {_fmt(per_dose)} per dose that's up to {med.max_per_day} doses.")
             else:
-                med.notes.append(f"Label limit: no more than {_fmt(limit)} {unit_word}s in 24 hours. The app can't count that for you, "
-                                 "so keep track when doses vary.")
+                # A limit in mg (or tablets) becomes a number of doses only when one dose is known in the same unit.
+                per = _per_dose_in(unit, first_qty, first_unit, label) if fixed else None
+                if per is None and not first_qty and unit in COUNT_UNITS:
+                    per = 1.0
+                if per and limit / per >= 1 - 1e-9:
+                    med.max_per_day = int(math.floor(limit / per + 1e-9))
+                    if not (unit in COUNT_UNITS and per == 1):
+                        med.notes.append(f"Label limit: {_fmt(limit)} {_unit_text(unit, limit)} a day. At {_measure(per)} "
+                                         f"{_unit_text(unit, per)} per dose that's up to {med.max_per_day} "
+                                         f"{'dose' if med.max_per_day == 1 else 'doses'}.")
+                else:
+                    why = "when doses vary" if not fixed else "and follow the label"
+                    med.notes.append(f"Label limit: no more than {_fmt(limit)} {_unit_text(unit, limit)} in 24 hours. The app can't "
+                                     f"count that for you, so keep track {why}.")
     # "Remove from refrigerator 30 minutes before use" / "let it sit at room temperature for 30 minutes"
     fridge = re.search(r"(?:out of|from) (?:the )?(?:fridge|refrigerator)\b[^.;]*?(\d{1,3})\s*(?:min|minutes?)\b"
                        r"|room temperature[^.;]*?(\d{1,3})\s*(?:min|minutes?)\b", directions, re.I)
-    if fridge:
+    if onbody:
+        # The clinic warms and fills it before putting it on (Neulasta label), so there's nothing to do at home.
+        med.no_prep = True
+        med.notes.append("On-body injector: the clinic puts it on, and it gives the dose by itself about 27 hours later. "
+                         "There's nothing to take out of the fridge, so if the medicine page shows \"Get it ready\", clear it. "
+                         "Log the dose when the light shows it's done.")
+    elif fridge:
         med.prep_minutes = int(fridge.group(1) or fridge.group(2))
         med.prep_note = "Take it out of the fridge"
         med.notes.append(f"Reminder to take it out of the fridge {med.prep_minutes} minutes before each dose.")
@@ -852,6 +1175,7 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
         med.notes.append(f"Matched by spelling to {med.name}. Check it's right.")
     if not med.info_key and med.name:
         med.notes.append("Not in the built-in list, so it's added as your own medicine.")
+    med.notes = list(dict.fromkeys(med.notes))
     med.plans = plans
     return med
 

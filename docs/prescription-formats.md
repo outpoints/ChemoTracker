@@ -33,12 +33,12 @@ Pharmacies print some names in mixed case, called "tall man" letters (`dexAMETHa
 |---|---|
 | Dose | `Take one tablet`, `2 tablets`, `1-2 tablets`, `½ tablet`, `8 mg` |
 | Route | `by mouth`, `PO`, `under the skin`, `SUBQ`, `IV`, `on the tongue`, `apply` |
-| How often | `daily`, `twice daily`, `BID`, `TID`, `QID`, `every 8 hours`, `q6h`, `every 4 to 6 hours` |
+| How often | `daily`, `twice daily`, `BID`, `TID`, `QID`, `3 times a day`, `8 times a day`, `every 8 hours`, `q6h`, `every 4 to 6 hours`, `around the clock` |
 | When | `at bedtime`, `QHS`, `in the morning`, `with meals`, `at 9 PM` |
 | As needed | `as needed`, `PRN`, `if needed`, `after each loose stool`, plus what for (`for nausea or vomiting`, `n/v`) |
-| Limit | `do not exceed 8 tablets in 24 hours`, `no more than 4 a day` |
-| Duration | `for 3 days`, `x 3 to 4 days` |
-| Steps | `then` (tapers like `4 mg the evening of chemo, then twice daily for 3 days`), `then stop` |
+| Limit | `do not exceed 8 tablets in 24 hours`, `no more than 4 a day`, `not more than 3 tablets a day`, `do not exceed 3000 mg per day` |
+| Duration | `for 3 days`, `x 3 to 4 days`, `x 4 doses` |
+| Steps | `then` (tapers like `4 mg the evening of chemo, then twice daily for 3 days`), `then stop`, and `and` between chemo-day phrases (`2 tablets the night before and 2 tablets the morning of chemo`) |
 
 ## How chemo schedules are written
 
@@ -62,6 +62,10 @@ The reader understands:
 | `the day after chemo`, `starting the day after chemo for 3 days` | Day 2, Days 2–4 |
 | `24 hours after chemo` | Day 2 |
 | `starting the day before chemotherapy for 3 days` | Days 0–2 |
+| `the day before, the day of and the day after chemo` | Days 0, 1 and 2 |
+| `the night before chemo and the morning of chemo` | Day 0 at 9 PM and Day 1 at 8 AM |
+| `12 and 6 hours before chemo` | Day 0 at 9 PM and Day 1 at 3 AM, counted back from a guessed 9 AM start (with a note) |
+| `every 6 hours x 4 doses starting the night before chemo` | 9 PM on Day 0, then 3 AM, 9 AM and 3 PM on Day 1 |
 
 ## Default times
 
@@ -73,6 +77,8 @@ When the label gives no clock time, the app uses the Universal Medication Schedu
 | twice daily, every 12 hours | 8 AM, 8 PM |
 | three times daily | 8 AM, 2 PM, 8 PM |
 | four times daily | 8 AM, 12 PM, 5 PM, 9 PM |
+| 5 or more times a day | spread from 8 AM to 10 PM (with a note) |
+| 4 times a day before meals and at bedtime | 8 AM, 12 PM, 6 PM, 9 PM |
 | with meals | 8 AM, 12 PM, 6 PM |
 | at bedtime | 9 PM |
 
@@ -81,7 +87,14 @@ When the label gives no clock time, the app uses the Universal Medication Schedu
 The reader never guesses silently. Each guess shows a note and a "guess" tag:
 
 - **No days on the label** (common for rescue medicines): uses the medicine's usual days from the built-in list and says so.
-- **"Every 8 hours" without "as needed"** for a rescue anti-nausea medicine: sets it as needed with an 8-hour gap and says so. These are commonly prescribed that way after chemo. Switch it to "On a schedule" if you were told to take it around the clock.
+- **"Every 8 hours" without "as needed"** for a rescue anti-nausea medicine: sets it as needed with an 8-hour gap and says so. These are commonly prescribed that way after chemo. Switch it to "On a schedule" if you were told to take it around the clock. Labels that say `around the clock`, `ATC`, `regularly` or `scheduled`, or that give the doses their own days (`every 8 hours for 2 days, then every 8 hours as needed`), stay on a schedule.
+- **"Do not" clauses** (`Do not take at bedtime`, `not on chemo day`) never become a time or a day. The note quotes them so you can check the schedule follows them.
+- **A count and a named time that disagree** (`twice daily at bedtime`): keeps the number of doses and says so.
+- **Doses more than a day apart** (`every 72 hours`, `every 3 days`, `every other day`, `weekly`): the app can't repeat a dose that way, so it sets only the first one and asks you to add the rest. It never turns them into a dose every day.
+- **Chemo start time**: `12 and 6 hours before chemo` is counted back from 9 AM and says so. Change the times to fit when chemo starts.
+- **Daily limits in mg** (`do not exceed 3000 mg per day`): counted as doses only when one dose is known in mg, for example 2 tablets of 500 mg is 1000 mg, so up to 3 doses. Otherwise the limit is left empty and the note quotes it.
+- **A dose unit that can't match the strength** (`8 mcg` of an 8 mg tablet): the dose is left empty with a note. Units are never changed.
+- **Pegfilgrastim on-body injector** (Neulasta Onpro): the clinic puts it on and it gives the dose by itself about 27 hours later. There's nothing to take out of the fridge at home.
 - **Ranges** (`every 4 to 6 hours`, `x 3 to 4 days`): uses the shorter gap and the longer number of days, and says so.
 - **Not in the built-in list:** added as your own medicine under the name you typed.
 
@@ -101,3 +114,7 @@ Bottle labels also carry the patient's name, address, Rx number, pharmacy, presc
 - Living Beyond Breast Cancer, AC-T regimen schedules. <https://www.lbbc.org/about-breast-cancer/treatments/chemotherapy/common-regimens/ac-t-doxorubicin>
 - CION, How to read your chemotherapy plan sheet ("Day numbers reset each cycle", q3w / q21d / D1, D8). <https://www.cioncancerclinics.com/chemotherapy/understanding/how-to-read-your-chemotherapy-plan/>
 - Cancer Research UK, Treatment cycles and courses. <https://www.cancerresearchuk.org/about-cancer/treatment/cancer-drugs/how-you-have/treatment-cycles-and-courses>
+- MedlinePlus, Fentanyl Transdermal Patch ("Apply the patch to the skin once every 72 hours", "Do not ... apply the patches more often ... than prescribed"). <https://medlineplus.gov/druginfo/meds/a601202.html>
+- DailyMed, paclitaxel label (premedication "dexamethasone 20 mg PO administered approximately 12 and 6 hours before paclitaxel"). <https://www.dailymed.nlm.nih.gov/dailymed/fda/fdaDrugXsl.cfm?setid=5721b9bf-c3c1-4b73-b96c-5fbe3147b6a5>
+- DailyMed, Neulasta label (the on-body injector "is programmed to deliver your dose about 27 hours after your healthcare provider places" it, and the clinic lets it reach room temperature before putting it on). <https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=fdfe5d72-6b80-435a-afa4-c5d74dd852ce>
+- DailyMed, Tylenol Regular Strength label ("maximum daily dose ... 10 tablets (3,250 mg) in 24 hours": a daily limit means 24 hours). <https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=1622f694-4d63-4c56-8737-fae31f0ecfb7>
