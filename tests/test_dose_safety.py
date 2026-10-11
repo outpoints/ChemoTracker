@@ -119,7 +119,8 @@ def test_a_replaced_schedule_keeps_the_doses_logged_on_the_old_one(client, cfg):
                                                                     "times": "13:00", "from_cycle": "1"}, follow_redirects=False)
     with session(cfg.db_path) as conn:
         new = _slots(conn, cfg, y, "Filgrastim")
-        assert len(new) == 1 and new[0].plan["id"] != plan["id"] and new[0].log is not None
+        # SQLite may give the new schedule the deleted one's id, so check the new time, not the id.
+        assert len(new) == 1 and new[0].time == "13:00" and new[0].log is not None
 
 
 def test_log_a_dose_counts_for_the_scheduled_row_and_the_row_then_refuses_a_second(client, cfg):
