@@ -222,6 +222,21 @@
         </details>
         {% endif %}
       {% endfor %}
+      {#- Doses logged this day that fit no planned slot: never hidden, and flagged when they go over the plan. #}
+      {% if extras %}
+      <section class="card extra-doses" id="extra-doses" aria-labelledby="extra-h">
+        <h2 id="extra-h">Also logged {{ "today" if is_today else "this day" }}</h2>
+        <ul class="list">
+          {% for x in extras %}
+          <li><a class="list-item" href="/dose/{{ x.id }}?back_to={{ back_url | urlencode }}">
+            <span class="grow"><span class="title">{{ x.med_name }}</span>
+              <span class="meta">{{ ("Taken " ~ fmt_time(x.taken_at)) if (x.status == "taken" and x.taken_at) else ("Taken" if x.status == "taken" else "Skipped") }}{% if x.who %} · {{ x.who }}{% endif %}</span>
+              {% if x.note %}<span class="extra-note">{{ icon("triangle-alert") }}{{ x.note }}</span>{% endif %}
+            </span>{{ icon("chevron-right", "chev") }}</a></li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% endif %}
       {% if follow_ups and not ns.ask %}{{ ask_section(follow_ups, people, back_url, ask_open) }}{% endif %}
       {% if is_today and not ns.feel %}{{ feelings_card(quick, feelings, fever_f, people, temp_unit) }}{% endif %}
 

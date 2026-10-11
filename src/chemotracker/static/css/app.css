@@ -596,6 +596,10 @@ a.lid:hover { border-color: color-mix(in srgb, var(--c-ink) 30%, transparent); c
 .sev-tag.s3 { background: var(--sev-3-soft); color: var(--text); } .sev-tag.s3::before { background: var(--sev-3); }
 
 /* follow-ups */
+/* Doses that fit no planned slot: listed, never hidden. */
+.extra-doses > h2 { font-size: var(--fs-md); padding: var(--s4) var(--s4) 0; }
+.extra-note { display: flex; align-items: flex-start; gap: var(--s1); margin-top: 2px; font-size: var(--fs-sm); color: var(--warn-ink, var(--text)); font-weight: 600; }
+.extra-note .icon { width: 16px; height: 16px; flex: none; margin-top: 2px; color: var(--warn); }
 /* "Any side effects from your medicine?": the optional follow-ups, folded under the as-needed shelf. */
 .follow { padding: var(--s4); }
 @media (min-width: 720px) { .follow { padding-inline: var(--s5); } }

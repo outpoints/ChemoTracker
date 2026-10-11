@@ -302,33 +302,130 @@ class Slot:
         return "Planned"
 
 
-def _logs_for_cycle(conn: sqlite3.Connection, cycle: sqlite3.Row, span: int) -> dict[tuple[int, str], sqlite3.Row]:
-    start, end = date_of(cycle, 0).isoformat(), (date_of(cycle, span) + timedelta(days=1)).isoformat()
-    rows = conn.execute(
-        "SELECT * FROM dose_logs WHERE plan_id IS NOT NULL AND slot IS NOT NULL AND slot >= ? AND slot < ?",
-        (start, end),
-    ).fetchall()
-    return {(r["plan_id"], r["slot"]): r for r in rows}
+LOG_SQL = """
+SELECT dl.*, m.name AS med_name, who.name AS who
+  FROM dose_logs dl JOIN medications m ON m.id = dl.medication_id
+  LEFT JOIN profiles who ON who.id = COALESCE(dl.updated_by, dl.logged_by)
+ WHERE COALESCE(dl.slot, dl.taken_at) >= ? AND COALESCE(dl.slot, dl.taken_at) < ?
+ ORDER BY COALESCE(dl.taken_at, dl.slot), dl.id
+"""
+
+
+def _log_days(log: sqlite3.Row) -> list[date]:
+    """The day a logged dose belongs to: the planned day it was logged for, else the day it was taken.
+
+    A dose taken in the small hours without a planned slot may also be last night's evening dose.
+    """
+    if log["slot"]:
+        return [date.fromisoformat(log["slot"][:10])]
+    taken = parse_local(log["taken_at"])
+    if taken is None:
+        return []
+    return [taken.date(), taken.date() - timedelta(days=1)] if taken.hour < 5 else [taken.date()]
+
+
+def _log_time(log: sqlite3.Row) -> datetime | None:
+    return parse_local(log["taken_at"]) or (parse_local(log["slot"]) if log["slot"] and len(log["slot"]) > 10 else None)
+
+
+def _pair_logs(out: list[Slot], logs: list[sqlite3.Row], plan_kinds: dict[int, str],
+               as_needed_days: dict[int, set[date]]) -> list[sqlite3.Row]:
+    """Attach each logged dose to its planned slot. Returns the logged doses that fit no slot.
+
+    A dose is tied to its slot by plan and planned time, but a dose that was logged still counts when the
+    schedule changes afterwards: a new time, new days, or a replaced plan. Otherwise the row shows as due
+    again and the family could give a second dose. Those doses, and doses logged from "Log a dose", go to
+    the nearest open slot of the same medicine on the same day. An unplanned dose of a medicine that is
+    also allowed as needed that day is left alone, because it may be the as-needed one.
+    """
+    used: set[int] = set()
+    by_key = {(log["plan_id"], log["slot"]): log for log in logs if log["plan_id"] is not None and log["slot"]}
+    for s in out:
+        log = by_key.get((s.plan["id"], s.key))
+        if log is not None:
+            s.log = log
+            used.add(log["id"])
+    open_slots: dict[tuple[int, date], list[Slot]] = {}
+    for s in out:
+        if s.log is None:
+            open_slots.setdefault((s.plan["medication_id"], s.date), []).append(s)
+    pairs: list[tuple[int, int, float, int, Slot]] = []
+    candidates: list[sqlite3.Row] = []
+    for log in logs:
+        if log["id"] in used or log["status"] not in ("taken", "skipped"):
+            continue
+        if plan_kinds.get(log["plan_id"]) == "as_needed":
+            continue  # "Took one" from the as-needed shelf, which shows it
+        days = _log_days(log)
+        if not log["slot"] and days and days[0] in as_needed_days.get(log["medication_id"], set()):
+            continue  # may be the as-needed dose: don't guess
+        candidates.append(log)
+        at = _log_time(log)
+        for i, d in enumerate(days):
+            for s in open_slots.get((log["medication_id"], d), []):
+                if i == 1 and (not s.time or s.time < "18:00"):
+                    continue  # the small hours only belong to last night's evening dose
+                gap = abs(real_diff(at, s.dt).total_seconds()) if (at is not None and s.time) else 0.0
+                pairs.append((0 if log["plan_id"] == s.plan["id"] else 1, i, gap, log["id"], s))
+    logs_by_id = {log["id"]: log for log in logs}
+    for _, _, _, log_id, s in sorted(pairs, key=lambda p: p[:3]):
+        if log_id not in used and s.log is None:
+            s.log = logs_by_id[log_id]
+            used.add(log_id)
+    return [log for log in candidates if log["id"] not in used]
+
+
+def _slots_and_extras(conn: sqlite3.Connection, cycle: sqlite3.Row) -> tuple[list[Slot], list[sqlite3.Row]]:
+    span = cycle_span(conn, cycle)
+    plans = plans_for(conn, cycle)
+    out: list[Slot] = []
+    as_needed_days: dict[int, set[date]] = {}
+    for plan in plans:
+        days = range(plan["start_day"], plan_end(plan, cycle) + 1)
+        if plan["kind"] == "as_needed":
+            as_needed_days.setdefault(plan["medication_id"], set()).update(date_of(cycle, dn) for dn in days)
+            continue
+        for dn in days:
+            d = date_of(cycle, dn)
+            for t in plan_times(plan) if plan["kind"] == "scheduled" else [None]:
+                out.append(Slot(plan=plan, cycle=cycle, day=dn, date=d, time=t))
+    start, end = date_of(cycle, 0), date_of(cycle, span) + timedelta(days=2)
+    logs = conn.execute(LOG_SQL, (start.isoformat(), end.isoformat())).fetchall()
+    plan_kinds = {r["id"]: r["kind"] for r in conn.execute("SELECT id, kind FROM plans")}
+    extras = _pair_logs(out, logs, plan_kinds, as_needed_days)
+    out.sort(key=lambda s: (s.date, s.kind != "clinic", s.time or "", s.plan["med_name"]))
+    return out, extras
 
 
 def slots(conn: sqlite3.Connection, cycle: sqlite3.Row, day: int | None = None) -> list[Slot]:
-    """Every planned clinic/scheduled dose in a cycle (or one day of it)."""
-    span = cycle_span(conn, cycle)
-    logs = _logs_for_cycle(conn, cycle, span)
-    out: list[Slot] = []
-    for plan in plans_for(conn, cycle):
-        if plan["kind"] == "as_needed":
+    """Every planned clinic/scheduled dose in a cycle (or one day of it), each with the dose logged for it.
+
+    Logged doses are paired across the whole cycle even when only one day is wanted, so a day always shows
+    the same thing whichever way it's looked at.
+    """
+    out, _ = _slots_and_extras(conn, cycle)
+    return out if day is None else [s for s in out if s.day == day]
+
+
+def extra_doses(conn: sqlite3.Connection, cycle: sqlite3.Row | None, d: date) -> list[dict]:
+    """Doses logged on `d` that fit no planned slot, so Today can show them instead of hiding them.
+
+    `note` says why it matters: more doses than planned, or a planned medicine on a day it isn't planned.
+    """
+    if cycle is None:
+        return []
+    out, extras = _slots_and_extras(conn, cycle)
+    planned_today = {s.plan["medication_id"] for s in out if s.date == d}
+    planned_ever = {s.plan["medication_id"] for s in out}
+    rows = []
+    for log in extras:
+        if _log_days(log)[:1] != [d]:
             continue
-        for dn in range(plan["start_day"], plan_end(plan, cycle) + 1):
-            if day is not None and dn != day:
-                continue
-            d = date_of(cycle, dn)
-            for t in plan_times(plan) if plan["kind"] == "scheduled" else [None]:
-                s = Slot(plan=plan, cycle=cycle, day=dn, date=d, time=t)
-                s.log = logs.get((plan["id"], s.key))
-                out.append(s)
-    out.sort(key=lambda s: (s.date, s.kind != "clinic", s.time or "", s.plan["med_name"]))
-    return out
+        mid = log["medication_id"]
+        note = ("More than planned. Check it isn't the same dose logged twice." if mid in planned_today
+                else "Not on the schedule this day." if mid in planned_ever else "")
+        rows.append({**dict(log), "note": note})
+    return rows
 
 
 def find_slot(conn: sqlite3.Connection, plan_id: int, key: str) -> Slot | None:
@@ -466,6 +563,86 @@ def early_dose_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetim
         ).fetchone()[0]
         if count >= most:
             return f"{count} {'dose is' if count == 1 else 'doses are'} already logged that day. The label allows up to {most}."
+    return None
+
+
+def _who_logged(log: sqlite3.Row, by: int | None) -> str:
+    if by is not None and (log["updated_by"] or log["logged_by"]) == by:
+        return "you"
+    return log["who"] if "who" in log.keys() and log["who"] else "someone"
+
+
+def _days_text(plans: list[sqlite3.Row], cycle: sqlite3.Row) -> str:
+    spans = []
+    for p in plans:
+        a, b = p["start_day"], plan_end(p, cycle)
+        spans.append(f"Day {a}" if a == b else f"Days {a}–{b}")
+    return ", ".join(dict.fromkeys(spans))
+
+
+def dose_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetime, by: int | None = None,
+                 slot: Slot | None = None, now: datetime | None = None, unplanned_ok: bool = False) -> str | None:
+    """A plain sentence when logging this dose could be a double dose, or None.
+
+    Every way of logging a dose asks this first: a scheduled row's Taken or Given, Took all, Log a dose and
+    Took one. As-needed medicines keep the label's gap and daily limit (early_dose_warning). Planned
+    medicines are also compared with that day's schedule: all of the day's doses already logged, another
+    dose less than half the planned gap away, or a scheduled-only medicine on a day it isn't planned.
+    """
+    warn = early_dose_warning(conn, med, when, by)
+    if warn:
+        return warn
+    d = slot.date if slot is not None else when.date()
+    cycle = cycle_for_date(conn, d)
+    if cycle is None:
+        return None
+    dn = day_number(cycle, d)
+    plans = [p for p in plans_for(conn, cycle) if p["medication_id"] == med["id"]]
+    if any(p["kind"] == "as_needed" and p["start_day"] <= dn <= plan_end(p, cycle) for p in plans):
+        return None  # allowed as needed today: the gap and daily limit above are the rule
+    planned_plans = [p for p in plans if p["kind"] != "as_needed"]
+    if not planned_plans:
+        return None  # not a planned medicine in this cycle
+    out, extras = _slots_and_extras(conn, cycle)
+    mine = [s for s in out if s.plan["medication_id"] == med["id"] and s.date == d]
+    today = (now or when).date()
+    day_word = "today" if d == today else ("yesterday" if (today - d).days == 1 else f"on {fmt_day(d)}")
+    if not mine:
+        if unplanned_ok:
+            return None
+        return (f"{med['name']} isn't planned {day_word}. Your schedule has it on {_days_text(planned_plans, cycle)}. "
+                "Make sure it wasn't already given and that the care team wants this dose.")
+    taken = [s.log for s in mine if s.log is not None and s.log["status"] == "taken"
+             and not (slot is not None and s.plan["id"] == slot.plan["id"] and s.key == slot.key)]
+    taken += [log for log in extras if log["medication_id"] == med["id"] and log["status"] == "taken"
+              and _log_days(log)[:1] == [d]]
+    if taken and len(taken) >= len(mine):
+        last = max(taken, key=lambda log: log["taken_at"] or "")
+        who = _who_logged(last, by)
+        at = f" at {fmt_time(last['taken_at'])}" if last["taken_at"] else ""
+        if len(mine) == 1:
+            return f"{med['name']} is planned once {day_word}, and {who} already logged it{at}. Make sure it isn't the same dose logged twice."
+        return (f"{med['name']} is planned {len(mine)} times {day_word}, and all {len(mine)} are already logged, "
+                f"the last{at}. Make sure it isn't the same dose logged twice.")
+    times = sorted(s.dt for s in mine if s.time)
+    if times:
+        gap = min((b - a for a, b in zip(times, times[1:])), default=timedelta(hours=24))
+        near = conn.execute(
+            """SELECT dl.*, p.name AS who FROM dose_logs dl LEFT JOIN profiles p ON p.id = COALESCE(dl.updated_by, dl.logged_by)
+                WHERE dl.medication_id = ? AND dl.status = 'taken' AND dl.taken_at > ? AND dl.taken_at < ?
+                ORDER BY abs(julianday(dl.taken_at) - julianday(?)) LIMIT 1""",
+            (med["id"], fmt_local(when - gap), fmt_local(when + gap), fmt_local(when)),
+        ).fetchone()
+        if near is not None:
+            other = parse_local(near["taken_at"])
+            assert other is not None
+            apart = abs(real_diff(when, other))
+            if apart < gap / 2:
+                side = "before this one" if other <= when else "after this time"
+                other_day = "" if other.date() == when.date() else f"{fmt_relative_day(other.date(), when.date()).lower()} "
+                every = "once a day" if len(times) == 1 else f"{fmt_duration(gap)} apart"
+                return (f"{_who_logged(near, by).capitalize()} logged {med['name']} {other_day}at {fmt_time(other)}, "
+                        f"{fmt_duration(apart)} {side}. It's planned {every}.")
     return None
 
 

@@ -412,12 +412,23 @@ def slot_log(conn: sqlite3.Connection, plan_id: int, slot: str) -> sqlite3.Row |
 
 
 def log_slot(conn: sqlite3.Connection, plan_row: sqlite3.Row, slot: str, status: str, taken_at: datetime | None,
-             dose: str | None, by: int | None = None) -> int:
-    """Record a planned dose. Idempotent per (plan, slot): a second tap updates instead of duplicating."""
+             dose: str | None, by: int | None = None, log_id: int | None = None) -> int:
+    """Record a planned dose. Idempotent per (plan, slot): a second tap updates instead of duplicating.
+
+    `log_id` replaces a dose already counted for this slot under an older key (the schedule changed after it
+    was logged): that record is corrected and moved onto the slot, never duplicated.
+    """
     if status not in ("taken", "skipped"):
         raise InvalidInput("Unknown status.")
     now = utcnow()
     taken = taken_at.strftime("%Y-%m-%d %H:%M") if (taken_at and status == "taken") else None
+    if log_id is not None:
+        conn.execute(
+            """UPDATE dose_logs SET plan_id = ?, slot = ?, kind = ?, status = ?, taken_at = ?, dose = COALESCE(?, dose),
+                      updated_at = ?, updated_by = COALESCE(?, updated_by) WHERE id = ?""",
+            (plan_row["id"], slot, plan_row["kind"], status, taken, dose, now, by, log_id),
+        )
+        return log_id
     existing = conn.execute("SELECT id FROM dose_logs WHERE plan_id = ? AND slot = ?", (plan_row["id"], slot)).fetchone()
     if existing:
         conn.execute(

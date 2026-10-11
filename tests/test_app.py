@@ -758,7 +758,8 @@ def test_people_can_be_added_renamed_and_removed(client, cfg):
         med_id = conn.execute("SELECT id FROM medications LIMIT 1").fetchone()[0]
     assert sam["role"] == "caregiver"
     client.post("/who", data={"profile_id": sam["id"], "next": "/"})
-    client.post("/dose/quick", data={"medication_id": med_id, "back": "/"})
+    # The first medicine is Filgrastim, which isn't planned on chemo day, so it asks first. This test is about names.
+    client.post("/dose/quick", data={"medication_id": med_id, "confirm": "1", "back": "/"})
     client.post(f"/people/{sam['id']}", data={"name": "Sam R", "role": "caregiver"})
     client.post(f"/people/{sam['id']}/active", data={"active": "0"})
     # Removed people keep their name on past entries, and this device must pick again.
