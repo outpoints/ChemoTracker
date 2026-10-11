@@ -155,6 +155,35 @@ def _plan_text(p: sqlite3.Row) -> str:
     return " · ".join(bits)
 
 
+# ---------------------------------------------------------------- typed text stays text
+
+# Spreadsheet programs run a cell that starts with one of these as a formula (OWASP "CSV injection").
+# Notes, names, label text and people's names are typed by anyone using the app, so the clinic's copy must
+# never run them.
+FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value):
+    """A CSV field the clinic's spreadsheet shows as typed. Numbers stay numbers."""
+    if isinstance(value, str) and value.startswith(FORMULA_START):
+        return "'" + value
+    return value
+
+
+def _text_cells(wb: Workbook) -> None:
+    """Every cell whose text could run as a formula becomes plain text, on every sheet.
+
+    openpyxl stores any string that starts with "=" as a formula, so typed text has to be marked as a string
+    after the fact. quotePrefix keeps it text if someone edits the cell in Excel later.
+    """
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                if isinstance(c.value, str) and c.value.startswith(FORMULA_START):
+                    c.data_type = "s"
+                    c.quotePrefix = True
+
+
 # ---------------------------------------------------------------- CSV
 
 
@@ -164,13 +193,13 @@ def doses_csv(conn: sqlite3.Connection, start: date, end: date, now: datetime) -
     w.writerow(["Date", "Time", "Planned time", "Cycle", "Day", "Medicine", "Strength", "Dose", "Type", "Status",
                 "Taken for", "Helped", "Dose felt", "Side effects", "Notes", "Logged by"])
     for r in dose_rows(conn, start, end, now):
-        w.writerow([
+        w.writerow([_csv_safe(v) for v in (
             r.when.date().isoformat() if r.when else "",
             r.when.strftime("%H:%M") if r.when and r.status == "Taken" else "",
             r.planned.strftime("%H:%M") if r.planned else "",
             r.cycle or "", "" if r.day is None else r.day, r.medicine, r.strength, r.dose, r.kind, r.status,
             r.reason, r.helped, r.dose_feel, r.side_effects, r.notes, r.by,
-        ])
+        )])
     return buf.getvalue().encode("utf-8-sig")
 
 
@@ -179,8 +208,8 @@ def symptoms_csv(conn: sqlite3.Connection, start: date, end: date, fever_f: floa
     w = csv.writer(buf)
     w.writerow(["Date", "Time", "Cycle", "Day", "Symptom", "Severity", "Reading", "Notes", "Logged by"])
     for r in symptom_rows(conn, start, end, fever_f):
-        w.writerow([r.when.date().isoformat(), r.when.strftime("%H:%M"), r.cycle or "",
-                    "" if r.day is None else r.day, r.symptom, r.severity, r.reading, r.notes, r.by])
+        w.writerow([_csv_safe(v) for v in (r.when.date().isoformat(), r.when.strftime("%H:%M"), r.cycle or "",
+                    "" if r.day is None else r.day, r.symptom, r.severity, r.reading, r.notes, r.by)])
     return buf.getvalue().encode("utf-8-sig")
 
 
@@ -246,6 +275,7 @@ def build_workbook(conn: sqlite3.Connection, start: date, end: date, now: dateti
             _grid_sheet(wb.create_sheet(f"Cycle {c['number']} grid"[:31]), conn, c, now)
     _medicine_sheet(wb.create_sheet("Medicines"), conn, sub)
     _history_sheet(wb.create_sheet("Change history"), conn, sub, start, end)
+    _text_cells(wb)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
