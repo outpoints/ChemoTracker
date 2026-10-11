@@ -4,12 +4,11 @@
 {% from "_history.html" import history_card with context %}
 {% from "_ui.html" import icon, med_info, by_tag %}
 <div class="page">
-  <a class="btn btn-quiet" href="/medicines" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Medicines</a>
-  <div class="page-head" style="margin-top: var(--s2)">
+  <a class="btn btn-quiet back-link" href="/medicines">{{ icon("arrow-left") }}Medicines</a>
+  <div class="page-head">
     <div>
-      <div class="eyebrow">{{ category_names.get(med.category, "Your medicine") }}{% if not med.active %} · stopped{% endif %}</div>
-      <h1>{{ med.name }}{% if med.brand %} <span class="muted" style="font-weight: 400">({{ med.brand }})</span>{% endif %}</h1>
-      {% if info %}<p class="sub">{{ info.family }}</p>{% endif %}
+      <h1>{{ med.name }}{% if med.brand %} <span class="muted">({{ med.brand }})</span>{% endif %}</h1>
+      <p class="sub">{{ category_names.get(med.category, "Your medicine") }}{% if not med.active %} · stopped{% endif %}</p>
     </div>
   </div>
 
@@ -20,10 +19,10 @@
       <section class="card card-pad med-summary" id="summary" aria-labelledby="sum-h">
         <h2 id="sum-h">{{ "What the clinic gives" if at_clinic else "What you take" }}</h2>
         {% if needs_label %}
-        <div class="callout callout-warn" style="margin-top: var(--s3)">{{ icon("pill-bottle") }}
+        <div class="callout callout-warn">{{ icon("pill-bottle") }}
           <div class="grow"><strong>Add what's on the bottle</strong><p class="meta">Copy the strength and directions from the pharmacy label so everyone takes it the same way.</p></div></div>
         {% endif %}
-        <dl class="rx-facts" style="margin-top: var(--s3)">
+        <dl class="rx-facts">
           {% if med.strength %}<dt>Strength</dt><dd>{{ med.strength }}</dd>{% endif %}
           {% if med.dose %}<dt>Dose</dt><dd>{{ med.dose }}</dd>{% endif %}
           {% if med.min_hours_between %}<dt>Spacing</dt><dd>At least {{ med.min_hours_between | string | replace(".0", "") }} hours apart{% if med.max_per_day %}, up to {{ med.max_per_day }} a day{% endif %}</dd>
@@ -36,19 +35,44 @@
             {% else %}<span class="pill pill-late">No schedule yet</span>{% endfor %}
           </dd>
         </dl>
-        {% if med.directions %}<p class="rx-sig" style="margin-top: var(--s3)">Label: {{ med.directions }}</p>{% endif %}
-        {% if med.notes %}<p class="meta" style="margin-top: var(--s2)">{{ med.notes }}</p>{% endif %}
+        {% if med.directions %}<p class="rx-sig">Label: {{ med.directions }}</p>{% endif %}
+        {% if med.notes %}<p class="meta">{{ med.notes }}</p>{% endif %}
         {% if med.active and not at_clinic %}
-        <a class="btn btn-soft" style="margin-top: var(--s4)" href="/dose/new?med={{ med.id }}">{{ icon("plus") }}Log a dose</a>
+        <a class="btn btn-secondary" href="/dose/new?med={{ med.id }}&back_to=/medicines/{{ med.id }}">{{ icon("plus") }}Log a dose</a>
         {% endif %}
+      </section>
+
+      <section aria-labelledby="recent-h">
+        <div class="section-title"><h2 id="recent-h">Recent doses</h2></div>
+        <div class="card">
+          {% if recent %}
+          <ul class="timeline">
+            {% set logged = (flash.logged if flash and flash.logged else []) %}
+            {% for r in recent %}
+            <li{% if r.id in logged %} class="just-logged"{% endif %}>
+              <span class="t">{{ fmt_time(r.taken_at or r.slot) if (r.taken_at or (r.slot and r.slot | length > 10)) else "" }}</span>
+              <span class="dot {{ 'is-skip' if r.status == 'skipped' else 'is-dose' }}"></span>
+              <div>
+                <div class="what">{{ fmt_rel(parse_local((r.taken_at or r.slot)[:10] ~ " 00:00").date(), today) }} · {{ "Taken" if r.status == "taken" else "Skipped" }}{% if r.dose %} <span class="meta nowrap">{{ r.dose }}</span>{% endif %}</div>
+                {{ by_tag(people, r.logged_by, r.updated_by) }}
+                {% if r.helped or r.dose_feel or r.side_effects %}<div class="note">{% if r.helped %}Helped: {{ helped_names[r.helped] }}{% endif %}{% if r.dose_feel %} · Dose {{ feel_names[r.dose_feel] | lower }}{% endif %}{% if r.side_effects %} · {{ r.side_effects }}{% endif %}</div>{% endif %}
+              </div>
+              <a class="btn btn-quiet btn-sm" href="/dose/{{ r.id }}?back_to=/medicines/{{ med.id }}" aria-label="Change this dose">{{ icon("edit") }}</a>
+            </li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <div class="empty"><p>No doses logged yet.</p></div>
+          {% endif %}
+        </div>
       </section>
 
       <details class="edit-zone" id="edit" {% if is_new or edit or needs_label or not plans %}open{% endif %}>
         <summary class="btn btn-secondary btn-block">{{ icon("pencil") }}Change details or schedule</summary>
-        <div class="stack-lg" style="margin-top: var(--s4)">
-      <details class="card more rx-fill" style="padding: 0 var(--s5)" {% if (is_new or needs_label) and not med.directions %}open{% endif %}>
+        <div class="stack-lg edit-body">
+      <details class="card more rx-fill" {% if (is_new or needs_label) and not med.directions %}open{% endif %}>
         <summary>{{ icon("clipboard-paste") }}&nbsp;Fill this in from the label</summary>
-        <form class="form" method="post" action="/medicines/{{ med.id }}/import" style="padding-bottom: var(--s5)">
+        <form class="form" method="post" action="/medicines/{{ med.id }}/import">
           <p class="meta">Type or paste what's printed on the bottle. It replaces the details and schedule. Check them after.</p>
           <textarea name="rx_text" rows="3" placeholder="{{ med.name }} - Take 1 tablet by mouth every 8 hours as needed for nausea" required></textarea>
           <button class="btn btn-secondary" type="submit">{{ icon("sparkles") }}Fill it in</button>
@@ -98,7 +122,7 @@
       </form>
 
       <section id="plans">
-        <div class="section-title" style="margin-top: 0"><h2>When it's used</h2></div>
+        <div class="section-title"><h2>When it's used</h2></div>
         <div class="stack">
           {% for p in plans %}
           <form class="card card-pad form" method="post" action="/plans/{{ p.id }}">
@@ -111,9 +135,9 @@
             </div>
           </form>
           {% endfor %}
-          <details class="card more" style="padding: 0 var(--s5)" {% if not plans %}open{% endif %}>
-            <summary>{{ icon("plus") }}&nbsp;{{ "Add a schedule" if not plans else "Add another schedule" }}</summary>
-            <form class="form" method="post" action="/medicines/{{ med.id }}/plans" style="padding-bottom: var(--s5)">
+          <details class="card more" {% if not plans %}open{% endif %}>
+            <summary>{{ "Add a schedule" if not plans else "Add another schedule" }}</summary>
+            <form class="form" method="post" action="/medicines/{{ med.id }}/plans">
               <p class="hint">For example, a second stretch of days, or different times on chemo day.</p>
               {% with plan=None, show_cycles=True %}{% include "_plan_form.html" %}{% endwith %}
               <button class="btn btn-primary" type="submit">Add schedule</button>
@@ -125,40 +149,17 @@
         </div>
       </details>
 
-      <section>
-        <div class="section-title"><h2>Recent doses</h2></div>
-        <div class="card">
-          {% if recent %}
-          <ul class="timeline">
-            {% for r in recent %}
-            <li>
-              <span class="t">{{ fmt_time(r.taken_at or r.slot) if (r.taken_at or (r.slot and r.slot | length > 10)) else "" }}</span>
-              <span class="dot {{ 'is-skip' if r.status == 'skipped' else 'is-dose' }}"></span>
-              <div>
-                <div class="what">{{ fmt_rel(parse_local((r.taken_at or r.slot)[:10] ~ " 00:00").date(), today) }} · {{ "Taken" if r.status == "taken" else "Skipped" }}{% if r.dose %} <span class="meta">{{ r.dose }}</span>{% endif %}</div>
-                {{ by_tag(people, r.logged_by, r.updated_by) }}
-                {% if r.helped or r.dose_feel or r.side_effects %}<div class="note">{% if r.helped %}Helped: {{ helped_names[r.helped] }}{% endif %}{% if r.dose_feel %} · Dose {{ feel_names[r.dose_feel] | lower }}{% endif %}{% if r.side_effects %} · {{ r.side_effects }}{% endif %}</div>{% endif %}
-              </div>
-              <a class="btn btn-quiet btn-sm" href="/dose/{{ r.id }}" aria-label="Edit">{{ icon("edit") }}</a>
-            </li>
-            {% endfor %}
-          </ul>
-          {% else %}
-          <div class="empty"><p>No doses logged yet.</p></div>
-          {% endif %}
-        </div>
-      </section>
     </div>
 
     <aside class="stack">
       {% if info %}
       <div class="card card-pad">
         <h2>About {{ info.generic }}</h2>
-        {% if info.brands %}<p class="meta" style="margin-top: var(--s1)">Also sold as {{ info.brands | join(", ") }}</p>{% endif %}
+        {% if info.brands %}<p class="meta">Also sold as {{ info.brands | join(", ") }}</p>{% endif %}
         {{ med_info(info) }}
       </div>
       {% else %}
-      <div class="card card-pad"><h2>About this medicine</h2><p class="meta" style="margin-top: var(--s2)">This one isn't in the built-in list, so there's no summary. Ask the pharmacist for the printed information sheet.</p></div>
+      <div class="card card-pad"><h2>About this medicine</h2><p class="meta">This one isn't in the built-in list, so there's no summary. Ask the pharmacist for the printed information sheet.</p></div>
       {% endif %}
 
       {% if events %}{{ history_card(events, "Label and schedule changes") }}{% endif %}
@@ -173,7 +174,7 @@
           <button class="btn btn-primary btn-block" type="submit">Start again</button></form>
         {% endif %}
         <form method="post" action="/medicines/{{ med.id }}/delete" data-confirm="Delete {{ med.name }} and every dose logged for it? They stay in the change history, but can't be put back.">
-          <button class="btn btn-danger btn-block" type="submit">{{ icon("trash") }}Delete medicine and history</button>
+          <button class="btn btn-danger btn-quieter" type="submit">{{ icon("trash") }}Delete this medicine</button>
         </form>
       </div>
     </aside>

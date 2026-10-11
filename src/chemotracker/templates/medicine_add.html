@@ -3,8 +3,8 @@
 {% block content %}
 {% from "_ui.html" import icon %}
 <div class="page page-narrow">
-  <a class="btn btn-quiet" href="/medicines" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Medicines</a>
-  <div class="page-head" style="margin-top: var(--s2)">
+  <a class="btn btn-quiet back-link" href="/medicines">{{ icon("arrow-left") }}Medicines</a>
+  <div class="page-head">
     <div><h1>Add a medicine</h1><p class="sub">Write in the prescription, tick it in the list, or type one that isn't listed.</p></div>
   </div>
   <form method="post" action="/medicines/add">

@@ -1,13 +1,28 @@
 {% from "_ui.html" import icon %}
 {% if flash %}
-<div class="toast" role="status" aria-live="polite">
-  <span class="grow">{{ flash.text }}</span>
-  {% if flash.follow %}<a href="/dose/{{ flash.follow }}">How did it go?</a>{% endif %}
-  {% if flash.undo %}
-  <form class="inline-form" method="post" action="/dose/{{ flash.undo }}/undo">
-    <input type="hidden" name="back" value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
-    <button type="submit">{{ icon("undo") }}&nbsp;Undo</button>
-  </form>
-  {% endif %}
+{#- One-time message after an action. The close link reloads the page without it when scripts are off.
+    The greeting after picking a person also fades on its own (data-toast-auto). -#}
+{%- set here = request.url.path ~ ("?" ~ request.url.query if request.url.query else "") %}
+<div class="toast" role="status" aria-live="polite"{% if flash.auto %} data-toast-auto{% endif %}>
+  <span class="toast-text">{{ flash.text }}</span>
+  {%- if flash.follow or flash.undo or flash.undo_many %}
+  <div class="toast-actions">
+    {% if flash.follow %}<a href="/dose/{{ flash.follow }}">How did it go?</a>{% endif %}
+    {% if flash.undo_many %}
+    <form class="inline-form" method="post" action="/doses/undo">
+      {% for i in flash.undo_many %}<input type="hidden" name="ids[]" value="{{ i }}">{% endfor %}
+      <input type="hidden" name="back" value="{{ here }}">
+      <button type="submit">{{ icon("undo") }}&nbsp;Undo</button>
+    </form>
+    {% endif %}
+    {% if flash.undo %}
+    <form class="inline-form" method="post" action="/dose/{{ flash.undo }}/undo">
+      <input type="hidden" name="back" value="{{ here }}">
+      <button type="submit">{{ icon("undo") }}&nbsp;Undo</button>
+    </form>
+    {% endif %}
+  </div>
+  {%- endif %}
+  <a class="toast-close" href="{{ here }}" data-toast-close aria-label="Dismiss this message">{{ icon("x") }}</a>
 </div>
 {% endif %}

@@ -367,6 +367,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # Reminders through ntfy (see reminders.py).
     "ntfy_enabled": "",
     "ntfy_server": "https://ntfy.sh",
+    "ntfy_topic_draft": "",
     "ntfy_topic": "",
     "ntfy_token": "",
     "ntfy_lead": "0",

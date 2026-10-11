@@ -31,9 +31,9 @@
   </div>
 
   {% if not existing %}
-  <details class="card more" style="padding: 0 var(--s5)" {% if v.get('then_count') %}open{% endif %}>
-    <summary>{{ icon("plus") }}&nbsp;Then a second part, like "followed by paclitaxel weekly x 12"</summary>
-    <div class="form" style="padding-bottom: var(--s5)">
+  <details class="card more" {% if v.get('then_count') %}open{% endif %}>
+    <summary>Then a second part, like "followed by paclitaxel weekly x 12"</summary>
+    <div class="form">
       <div class="field-row">
         <div class="field"><label for="then_regimen">Treatment name</label><input id="then_regimen" name="then_regimen" type="text" value="{{ v.get('then_regimen') or '' }}" placeholder="For example: Paclitaxel"></div>
         <div class="field"><label for="then_count">How many cycles?</label><input id="then_count" name="then_count" type="number" min="1" max="60" value="{{ v.get('then_count') or '' }}" placeholder="For example: 12"></div>

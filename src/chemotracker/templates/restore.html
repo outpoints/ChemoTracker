@@ -2,20 +2,20 @@
 {% block title %}Restore a backup · ChemoTracker{% endblock %}
 {% block content %}
 <div class="page page-narrow stack">
-  <a class="btn btn-quiet" href="/settings#backups" style="margin-left: calc(var(--s3) * -1); align-self: flex-start">{{ icon("arrow-left") }}Settings</a>
+  <a class="btn btn-quiet back-link" href="/settings#backups" style="align-self: flex-start">{{ icon("arrow-left") }}Settings</a>
   <div class="page-head" style="margin: 0">
     <div>
-      <div class="eyebrow">{{ file.kind }}</div>
       <h1>Restore {{ fmt_day(file.taken.date()) }}, {{ fmt_time(file.taken) }}?</h1>
+      <p class="sub">{{ file.kind }}</p>
     </div>
   </div>
   {% if not info.ok %}
   <div class="callout callout-urgent" role="alert">{{ icon("triangle-alert") }}
-    <div class="grow"><h3>This backup is damaged</h3><p style="margin-top: var(--s1)">Pick an earlier one.</p></div></div>
+    <div class="grow"><h3>This backup is damaged</h3><p>Pick an earlier one.</p></div></div>
   {% else %}
   <div class="callout callout-warn">{{ icon("triangle-alert") }}
     <div class="grow"><h2 class="callout-title">Everything goes back to how it was then</h2>
-      <p style="margin-top: var(--s2)">Anything logged after {{ fmt_time(file.taken) }} on {{ fmt_day(file.taken.date()) }} won't show any more. Before restoring, the app saves what's here now, so you can switch back from Settings.</p></div>
+      <p>Anything logged after {{ fmt_time(file.taken) }} on {{ fmt_day(file.taken.date()) }} won't show any more. Before restoring, the app saves what's here now, so you can switch back from Settings.</p></div>
   </div>
   <div class="card card-pad">
     <table class="compare">
@@ -27,7 +27,7 @@
         <tr><th scope="row">Cycles</th><td>{{ info.cycles }}</td><td>{{ current.cycles }}</td></tr>
       </tbody>
     </table>
-    {% if info.last %}{% set last = parse_local(info.last) %}<p class="meta" style="margin-top: var(--s3)">Last entry in the backup: {{ fmt_day(last.date()) }}, {{ fmt_time(last) }}</p>{% endif %}
+    {% if info.last %}{% set last = parse_local(info.last) %}<p class="meta">Last entry in the backup: {{ fmt_day(last.date()) }}, {{ fmt_time(last) }}</p>{% endif %}
   </div>
   <form method="post" action="/settings/restore">
     <input type="hidden" name="file" value="{{ file.name }}">

@@ -25,7 +25,7 @@ def test_walkthrough_builds_todays_compartments(client, cfg):
     r = client.get("/")
     assert r.status_code == 200
     html = r.text
-    assert "Cycle 1 · Day 3" in html
+    assert "Day 3<span class=\"of\"> of 14</span>" in html and "Cycle 1" in html
     for period in ("Morning", "Afternoon", "Bedtime"):
         assert f'<span class="c-name">{period}</span>' in html
     assert "Dexamethasone" in html and "2 tablets (4 mg)" in html
@@ -89,6 +89,63 @@ def test_as_needed_gap_and_follow_up(client, cfg):
         assert row["helped"] == "some" and row["dose_feel"] == "not_enough"
 
 
+def test_follow_ups_fold_away_under_the_as_needed_shelf(client, cfg):
+    # Optional questions must not push due doses down: one closed section below the as-needed shelf,
+    # never loose cards above the compartments. Saving one reopens it while others are still waiting.
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    with session(cfg.db_path, write=True) as conn:
+        med = conn.execute("SELECT id FROM medications WHERE name = 'Prochlorperazine'").fetchone()["id"]
+        first = store.log_dose(conn, med, local_now(cfg) - timedelta(hours=9), "1 tablet", None)
+        store.log_dose(conn, med, local_now(cfg) - timedelta(hours=2), "1 tablet", None)
+    html = client.get("/").text
+    assert 'class="card follow"' not in html
+    section = html.split('id="c-ask"')[0].rsplit("<details", 1)[1] + html.split('id="c-ask"')[1].split("</details>")[0]
+    assert "Any side effects from your medicine?" in section and "Optional · 2 recent doses" in section
+    assert " open>" not in section.split("<summary>")[0]  # closed until someone opens it
+    assert section.count('<form class="follow"') == 2 and 'value="/?ask=1#c-ask"' in section
+    assert html.index('id="c-prn"') < html.index('id="c-ask"')  # below the shelf it asks about
+    client.post(f"/dose/{first}/follow", data={"helped": "yes", "back": "/?ask=1#c-ask"}, follow_redirects=False)
+    again = client.get("/?ask=1").text
+    head = again.split('id="c-ask"')[1].split("<summary>")[0]
+    assert "open" in head and "Optional · 1 recent dose<" in again
+
+def test_as_needed_without_a_wait_time_never_says_ok(client, cfg):
+    # With no hours-between saved, the app can't know when the next one is OK, so it must not say so.
+    setup_walkthrough(client, today(cfg) - timedelta(days=4))  # Day 5: prochlorperazine is planned
+    with session(cfg.db_path) as conn:
+        med = conn.execute("SELECT * FROM medications WHERE name = 'Prochlorperazine'").fetchone()
+        conn.execute("UPDATE medications SET min_hours_between = NULL WHERE id = ?", (med["id"],))
+        med = conn.execute("SELECT * FROM medications WHERE id = ?", (med["id"],)).fetchone()
+        an = schedule._as_needed_row(conn, med, None, local_now(cfg))
+        assert an.state(local_now(cfg)) == "open" and an.fraction(local_now(cfg)) == 0.0
+        assert an.status_text(local_now(cfg)) == "Time between doses not saved"
+    rows = client.get("/").text.split('<div class="prn-row ')
+    row = next(r for r in rows if ">Prochlorperazine</a>" in r).split("</form>")[0]  # just this row, not the rest of the page
+    assert row.startswith("open") and "Time between doses not saved" in row and "OK to take now" not in row
+    assert "countdown open" in row and "btn-primary" not in row
+    assert f"/medicines/{med['id']}?edit=1#gap" in row
+
+
+def test_messages_can_be_dismissed(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    with session(cfg.db_path) as conn:
+        pid = conn.execute("SELECT id FROM profiles ORDER BY id LIMIT 1").fetchone()["id"]
+    page = client.post("/who", data={"profile_id": str(pid), "next": "/"}).text
+    toast = page.split('<div class="toast"')[1].split("</div>")[0]
+    assert "Entries you log now show your name" in toast and "data-toast-auto" in toast
+    # The X is a real link back to the same page, so it works even with scripts off.
+    assert 'class="toast-close" href="/" data-toast-close aria-label="Dismiss this message"' in toast
+    assert '<div class="toast"' not in client.get("/").text  # shown once
+
+
+def test_reminder_name_stays_the_same_between_visits(client, cfg):
+    # People leave the page to install ntfy. If the name changed on reload, reminders would never arrive.
+    setup_walkthrough(client, today(cfg))
+    first = re.search(r'id="topic-name">([^<]+)<', client.get("/settings").text).group(1)
+    again = re.search(r'id="topic-name">([^<]+)<', client.get("/settings").text).group(1)
+    assert first == again and first.startswith("chemotracker-")
+
+
 def test_symptom_logging_links_to_rescue_meds_and_flags_fever(client, cfg):
     setup_walkthrough(client, today(cfg) - timedelta(days=4))  # Day 5: ondansetron + prochlorperazine allowed
     r = client.post("/symptoms/new", data={"symptom": "nausea", "severity": "2", "notes": "after lunch"},
@@ -118,9 +175,9 @@ def test_symptom_suggestions_respect_planned_days(client, cfg):
     r = client.post("/symptoms/new", data={"symptom": "nausea", "severity": "2"}, follow_redirects=False)
     saved = client.get(r.headers["location"]).text
     ond = saved.split("Ondansetron")[1].split("prn-row")[0]
-    assert "Not planned today (Days 4–6)" in ond and "OK to take now" not in ond and "Took one now" not in ond
+    assert "Not planned today (Days 4–6)" in ond and "OK to take now" not in ond and "Took one</span>" not in ond
     comp = saved.split("Prochlorperazine")[1]
-    assert "OK to take now" in comp and "Took one now" in comp
+    assert "OK to take now" in comp and "Took one</span>" in comp
 
 
 def test_medicine_and_plan_are_editable(client, cfg):
@@ -144,6 +201,354 @@ def test_medicine_and_plan_are_editable(client, cfg):
         assert (p["start_day"], p["end_day"], p["times"]) == (1, 4, "20:30")
     page = client.get(f"/medicines/{olz['id']}").text
     assert "About Olanzapine" in page and "MedlinePlus" in page
+
+
+def test_medicines_are_grouped_by_place_then_type(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    page = client.get("/medicines").text
+    home = page.split('id="home-h">At home</h2>')[1].split('id="clinic-h"')[0]
+    clinic = page.split('id="clinic-h">At the clinic</h2>')[1].split("</section>")[0]
+    # At home is what the family gives, grouped by type.
+    assert home.index(">Nausea &amp; vomiting</h3>") < home.index(">White-blood-cell boosters</h3>")
+    nausea = home.split(">Nausea &amp; vomiting</h3>")[1].split("</section>")[0]
+    assert "Ondansetron" in nausea and "Dexamethasone" in nausea
+    assert "Filgrastim" in home.split(">White-blood-cell boosters</h3>")[1]
+    # The clinic's medicines are one plain list, not grouped by type.
+    assert "Doxorubicin" in clinic and "<h3" not in clinic and "Doxorubicin" not in home
+
+
+def test_log_a_dose_is_one_screen_grouped_like_the_medicines_page(client, cfg):
+    import re
+    setup_walkthrough(client, today(cfg))
+    page = client.get("/dose/new").text  # "Took one earlier?" from Today
+    form = page.split('action="/dose/new"')[1].split("</form>")[0]
+    # Medicine, when, dose on one screen. No second page, no date-and-time picker to fight with.
+    assert 'name="medication_id"' in form and 'name="ago"' in form and 'name="dose"' in form
+    assert 'type="datetime-local"' not in form
+    # Exact times only: Just now or Other time with a clock. No "30 min ago" guesses.
+    assert re.findall(r'name="ago" value="([^"]+)"', form) == ["0", "pick"]
+    assert ">Just now<" in form and ">Other time<" in form and " ago<" not in form
+    groups = re.findall(r'<optgroup label="([^"]+)">', form)
+    meds_page = client.get("/medicines").text
+    home_heads = [h.replace("&amp;", "&") for h in re.findall(r'<h3 id="g-[^"]+">([^<]+)</h3>', meds_page)]
+    assert [g.replace("&amp;", "&") for g in groups] == home_heads + ["At the clinic"]
+    nausea = form.split('<optgroup label="Nausea &amp; vomiting">')[1].split("</optgroup>")[0]
+    assert ">Ondansetron" in nausea and ">Dexamethasone" in nausea
+    assert ">Doxorubicin" in form.split('<optgroup label="At the clinic">')[1]
+
+
+def test_log_a_dose_with_a_medicine_already_picked(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    with session(cfg.db_path) as conn:
+        med = conn.execute("SELECT * FROM medications WHERE name = 'Prochlorperazine'").fetchone()
+    page = client.get(f"/dose/new?med={med['id']}&back_to=/medicines/{med['id']}").text
+    assert f'value="{med["id"]}" selected' in page and 'value="1 tablet"' in page  # dose from the label
+    assert "Label: Example: 1 tablet every 6 hours as needed" in page and "OK to take now" in page
+    assert f'href="/medicines/{med["id"]}"' in page
+    r = client.post("/dose/new", data={"medication_id": med["id"], "ago": "60", "dose": "", "back": f"/medicines/{med['id']}"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/medicines/{med['id']}"
+    with session(cfg.db_path) as conn:
+        row = conn.execute("SELECT * FROM dose_logs WHERE medication_id = ?", (med["id"],)).fetchone()
+    assert row["dose"] == "1 tablet"  # left blank, so the label's dose
+    assert row["taken_at"][:13] == (local_now(cfg) - timedelta(minutes=60)).strftime("%Y-%m-%d %H")
+    # Nothing picked: it says so instead of failing.
+    r = client.post("/dose/new", data={"ago": "0", "back": "/"})
+    assert r.status_code == 400 and "Pick the medicine first." in r.text
+
+
+def test_medicine_page_shows_recent_doses_before_the_edit_forms(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    with session(cfg.db_path) as conn:
+        med = conn.execute("SELECT * FROM medications WHERE name = 'Ondansetron'").fetchone()
+        log_id = store.log_dose(conn, med["id"], local_now(cfg) - timedelta(hours=1), "1 tablet", None)
+    page = client.get(f"/medicines/{med['id']}").text
+    assert page.index(">Recent doses</h2>") < page.index("Change details or schedule")
+    # Its edit link comes back to this medicine, not Today.
+    assert f'href="/dose/{log_id}?back_to=/medicines/{med["id"]}"' in page
+
+
+def test_dose_page_puts_the_time_first_and_returns_where_it_came_from(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    with session(cfg.db_path) as conn:
+        med = conn.execute("SELECT * FROM medications WHERE name = 'Ondansetron'").fetchone()
+        log_id = store.log_dose(conn, med["id"], local_now(cfg) - timedelta(hours=1), "1 tablet", None)
+        seen = store.dose_log(conn, log_id)["updated_at"]
+    page = client.get(f"/dose/{log_id}?back_to=/medicines/{med['id']}").text
+    form = page.split('action="/dose/%d"' % log_id)[1].split("</form>")[0]
+    assert 'name="taken_at"' in form and "<details" not in form.split('name="taken_at"')[0]
+    assert "Change time or dose" not in page
+    assert form.index('name="taken_at"') < form.index("Did it help?")
+    assert f'href="/medicines/{med["id"]}"' in page and f'name="back" value="/medicines/{med["id"]}"' in page
+    r = client.post(f"/dose/{log_id}", data={"seen": seen, "status": "taken", "taken_at": "2026-01-01T09:15",
+                                             "back": f"/medicines/{med['id']}"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/medicines/{med['id']}"
+    with session(cfg.db_path) as conn:
+        assert store.dose_log(conn, log_id)["taken_at"].startswith("2026-01-01 09:15")
+
+
+def test_dose_page_asks_did_it_help_only_where_one_dose_can_be_judged(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    when = local_now(cfg) - timedelta(hours=1)
+    with session(cfg.db_path) as conn:
+        ids = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM medications")}
+        rescue = store.log_dose(conn, ids["Prochlorperazine"], when, "1 tablet", None)   # as-needed
+        booster = store.log_dose(conn, ids["Filgrastim"], when, None, None)             # white-cell booster
+        steroid = store.log_dose(conn, ids["Dexamethasone"], when, None, None)          # scheduled prevention
+    assert "Did it help?" in client.get(f"/dose/{rescue}").text
+    for log_id in (booster, steroid):
+        page = client.get(f"/dose/{log_id}").text
+        assert "Did it help?" not in page and 'name="taken_at"' in page and "Any side effects?" in page
+    # An answer saved before this rule stays visible, so saving the page can't erase it.
+    with session(cfg.db_path, write=True) as conn:
+        conn.execute("UPDATE dose_logs SET helped = 'yes' WHERE id = ?", (booster,))
+    assert "Did it help?" in client.get(f"/dose/{booster}").text
+
+
+def test_clinic_medicine_asks_first_when_today_isnt_its_clinic_day(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=3))  # today is day 4; the clinic gives Doxorubicin on day 1
+    with session(cfg.db_path) as conn:
+        ids = {r["name"]: r["id"] for r in conn.execute("SELECT id, name FROM medications")}
+    page = client.get("/dose/new").text
+    assert 'id="clinic-sheet"' in page and "Pick another medicine" in page
+    dox = page.split(f'<option value="{ids["Doxorubicin"]}"')[1].split(">")[0]
+    assert 'data-clinic-note="The infusion team gives Doxorubicin at the clinic on day 1. Today is day 4."' in dox
+    assert "data-clinic-note" not in page.split(f'<option value="{ids["Ondansetron"]}"')[1].split(">")[0]
+    # Without JavaScript the pop-up can't run, so saving asks on a check page first.
+    r = client.post("/dose/new", data={"medication_id": ids["Doxorubicin"], "ago": "0", "back": "/"})
+    assert "Given at the clinic" in r.text and "Today is day 4." in r.text and "Log it anyway" in r.text
+    assert 'name="clinic_ok" value="1"' in r.text
+    with session(cfg.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM dose_logs WHERE medication_id = ?", (ids["Doxorubicin"],)).fetchone()[0] == 0
+    # After "Log it anyway" (pop-up or check page) it logs.
+    client.post("/dose/new", data={"medication_id": ids["Doxorubicin"], "ago": "0", "clinic_ok": "1", "back": "/"})
+    with session(cfg.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM dose_logs WHERE medication_id = ?", (ids["Doxorubicin"],)).fetchone()[0] == 1
+    # A home medicine never asks.
+    r = client.post("/dose/new", data={"medication_id": ids["Ondansetron"], "ago": "0", "back": "/"}, follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_clinic_medicine_logs_without_asking_on_its_clinic_day(client, cfg):
+    setup_walkthrough(client, today(cfg))  # today is day 1, chemo day
+    with session(cfg.db_path) as conn:
+        dox = conn.execute("SELECT id FROM medications WHERE name = 'Doxorubicin'").fetchone()["id"]
+    page = client.get("/dose/new").text
+    assert "data-clinic-note" not in page and 'id="clinic-sheet"' not in page
+    r = client.post("/dose/new", data={"medication_id": dox, "ago": "0", "back": "/"}, follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_how_was_the_dose_is_optional(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    with session(cfg.db_path) as conn:
+        med = conn.execute("SELECT id FROM medications WHERE name = 'Prochlorperazine'").fetchone()["id"]
+        log_id = store.log_dose(conn, med, local_now(cfg) - timedelta(hours=1), "1 tablet", None)
+        conn.execute("UPDATE dose_logs SET dose_feel = 'too_strong' WHERE id = ?", (log_id,))
+        seen = store.dose_log(conn, log_id)["updated_at"]
+    page = client.get(f"/dose/{log_id}").text
+    assert "How was the dose? <span class=\"meta\">(optional)</span>" in page
+    feel = page.split("How was the dose?")[1].split("</fieldset>")[0]
+    assert "data-clearable" in feel and "required" not in feel
+    # Saving with no answer picked clears it (what tapping the chosen answer again does).
+    client.post(f"/dose/{log_id}", data={"seen": seen, "status": "taken", "taken_at": "2026-01-01T09:15", "back": "/"})
+    with session(cfg.db_path) as conn:
+        assert store.dose_log(conn, log_id)["dose_feel"] is None
+
+
+def test_taken_asks_just_now_or_other_time(client, cfg):
+    import re
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))  # day 3: dexamethasone 8:00, olanzapine 21:00
+    page = client.get("/").text
+    row = page.split('id="slot-')[1:]
+    dex = next(r for r in row if ">Dexamethasone</a>" in r.split("</div>")[0] or ">Dexamethasone</a>" in r[:400])
+    panel = dex.split('<details class="take"')[1].split("</details>")[0]
+    # Exact times only: the planned time records the schedule, not when it was taken.
+    assert "When was it taken?" in panel and 'name="at_time"' in panel
+    assert re.findall(r'name="when" value="([^"]+)"', panel) == ["now", "at"]
+    assert panel.index("Just now") < panel.index("Other time") and 'value="planned"' not in panel
+    # A past day has no "Just now". Only the clock, set to the planned time to check.
+    yesterday = (today(cfg) - timedelta(days=1)).isoformat()
+    past = client.get(f"/?d={yesterday}").text.split('<details class="take"')[1].split("</details>")[0]
+    assert re.findall(r'name="when" value="([^"]+)"', past) == ["at"] and "Just now" not in past
+
+
+def test_taken_at_the_planned_or_another_time(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    with session(cfg.db_path) as conn:
+        cycle = schedule.cycle_for_date(conn, today(cfg))
+        dex = next(s for s in schedule.slots(conn, cycle, 3) if s.plan["med_name"] == "Dexamethasone")
+        olz = next(s for s in schedule.slots(conn, cycle, 2) if s.plan["med_name"] == "Olanzapine")  # yesterday 21:00
+    tap = {"plan_id": dex.plan["id"], "slot": dex.key, "status": "taken", "back": "/"}
+    if local_now(cfg) >= dex.dt:
+        client.post("/slot", data={**tap, "when": "planned"})
+        with session(cfg.db_path) as conn:
+            assert store.slot_log(conn, dex.plan["id"], dex.key)["taken_at"].startswith(dex.dt.strftime("%Y-%m-%d %H:%M"))
+            store.delete_dose_log(conn, store.slot_log(conn, dex.plan["id"], dex.key)["id"])
+    # A time that hasn't happened yet is refused, not logged.
+    later = (local_now(cfg) + timedelta(hours=2))
+    if later.date() == local_now(cfg).date():
+        r = client.post("/slot", data={**tap, "when": "at", "at_time": later.strftime("%H:%M")}, follow_redirects=False)
+        assert r.status_code == 303
+        with session(cfg.db_path) as conn:
+            assert store.slot_log(conn, dex.plan["id"], dex.key) is None
+    # Yesterday's bedtime dose logged at 12:30 means after midnight, not the morning before.
+    client.post("/slot", data={"plan_id": olz.plan["id"], "slot": olz.key, "status": "taken", "back": "/",
+                               "when": "at", "at_time": "21:40"})
+    with session(cfg.db_path) as conn:
+        assert store.slot_log(conn, olz.plan["id"], olz.key)["taken_at"].startswith(f"{olz.date.isoformat()} 21:40")
+
+
+def test_chosen_time_after_midnight_for_evening_doses():
+    from datetime import datetime as DT
+    from chemotracker.web import _chosen_time
+
+    class FakeSlot:
+        date = DT(2026, 1, 2).date()
+        time = "21:00"
+        dt = DT(2026, 1, 2, 21, 0)
+    now = DT(2026, 1, 3, 1, 0)
+    assert _chosen_time("at", FakeSlot, "00:30", now) == DT(2026, 1, 3, 0, 30)
+    assert _chosen_time("at", FakeSlot, "22:15", now) == DT(2026, 1, 2, 22, 15)
+    assert _chosen_time("planned", FakeSlot, None, now) == DT(2026, 1, 2, 21, 0)
+    assert _chosen_time("now", FakeSlot, None, now) == now
+
+
+def test_clinic_doses_ask_when_and_show_the_time(client, cfg):
+    # Chemo's time starts the 24 hours before a white-cell booster may be given, so clinic doses get an
+    # exact time like home doses, and every place that lists them shows it.
+    setup_walkthrough(client, today(cfg) - timedelta(days=1))  # day 2: yesterday was the chemo day
+    yesterday = (today(cfg) - timedelta(days=1)).isoformat()
+    page = client.get(f"/?d={yesterday}").text
+    clinic = page.split('id="c-clinic"')[1].split("</details>\n")[0]
+    assert "When was it given?" in clinic and "Given</span>" in clinic
+    # A past day: no "Just now", only the clock.
+    first = clinic.split('<details class="take"')[1].split("</details>")[0]
+    assert re.findall(r'name="when" value="([^"]+)"', first) == ["at"] and "Just now" not in first
+    with session(cfg.db_path) as conn:
+        cycle = schedule.cycle_for_date(conn, today(cfg))
+        dox = next(s for s in schedule.slots(conn, cycle, 1) if s.plan["med_name"] == "Doxorubicin")
+    r = client.post("/slot", data={"plan_id": dox.plan["id"], "slot": dox.key, "status": "taken", "when": "at",
+                                   "at_time": "13:45", "back": f"/?d={yesterday}"}, follow_redirects=False)
+    assert r.status_code == 303
+    with session(cfg.db_path) as conn:
+        assert store.slot_log(conn, dox.plan["id"], dox.key)["taken_at"] == f"{yesterday} 13:45"
+    shown = client.get(f"/?d={yesterday}").text
+    assert "Doxorubicin marked given at 1:45 PM." in shown and "Given 1:45 PM" in shown
+    assert "Given 1:45 PM" in client.get("/cycles/1?day=1").text  # the day list
+    assert "✓ 1:45p" in client.get("/cycles/1").text  # the sheet
+    csv = client.get("/report-doses.csv").content.decode("utf-8-sig")
+    dox_rows = [line for line in csv.splitlines() if ",Doxorubicin (" in line]
+    assert dox_rows and dox_rows[0].startswith(f"{yesterday},13:45,")
+
+
+def test_todays_clinic_doses_offer_just_now_or_other_time(client, cfg):
+    setup_walkthrough(client, today(cfg))  # day 1: chemo day
+    clinic = client.get("/").text.split('id="c-clinic"')[1].split("</details>\n")[0]
+    panel = clinic.split('<details class="take"')[1].split("</details>")[0]
+    assert "When was it given?" in panel and re.findall(r'name="when" value="([^"]+)"', panel) == ["now", "at"]
+
+
+def test_took_all_logs_every_open_dose_once(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=3))  # day 4: yesterday's doses are all open
+    with session(cfg.db_path) as conn:
+        cycle = schedule.cycle_for_date(conn, today(cfg))
+        past = [s for s in schedule.slots(conn, cycle, 3) if s.kind != "clinic"]
+        first = past[0]
+        store.log_slot(conn, first.plan, first.key, "taken", first.dt, None)  # someone already logged one
+    items = [f"{s.plan['id']}|{s.key}" for s in past]
+    r = client.post("/slots/taken", data={"slots[]": items, "when": "planned", "back": "/"}, follow_redirects=False)
+    assert r.status_code == 303
+    with session(cfg.db_path) as conn:
+        logs = [store.slot_log(conn, s.plan["id"], s.key) for s in past]
+        assert all(l is not None for l in logs)
+        assert all(l["taken_at"].startswith(s.dt.strftime("%Y-%m-%d %H:%M")) for l, s in zip(logs, past))
+        new_ids = [l["id"] for l in logs[1:]]
+    toast = client.get("/").text
+    assert "action=\"/doses/undo\"" in toast and "already logged by someone else" in toast
+    client.post("/doses/undo", data={"ids[]": [str(i) for i in new_ids], "back": "/"})
+    with session(cfg.db_path) as conn:
+        assert store.slot_log(conn, first.plan["id"], first.key) is not None  # theirs stays
+        assert all(store.slot_log(conn, s.plan["id"], s.key) is None for s in past[1:])
+
+
+def test_took_both_shows_only_where_two_open_doses_share_a_compartment(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=3))  # day 4
+    yesterday = (today(cfg) - timedelta(days=1)).isoformat()
+    page = client.get(f"/?d={yesterday}").text
+    assert "When were they taken?" not in page  # one dose per compartment: each row's own Taken is enough
+    with session(cfg.db_path, write=True) as conn:
+        conn.execute("""INSERT INTO plans (medication_id, kind, start_day, end_day, times, from_cycle, created_at)
+                        SELECT id, 'scheduled', 1, NULL, '08:00', 1, datetime('now') FROM medications
+                        WHERE name = 'Olanzapine'""")
+    morning = client.get(f"/?d={yesterday}").text.split('id="c-morning"')[1].split("</details>\n        ")[0]
+    assert "Took both" in morning and "When were they taken?" in morning
+    assert morning.count('name="slots[]"') == 2
+
+
+def test_took_one_asks_when_and_checks_spacing_at_that_time(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))  # day 3: prochlorperazine every 6 hours
+    with session(cfg.db_path) as conn:
+        med = conn.execute("SELECT id FROM medications WHERE name = 'Prochlorperazine'").fetchone()["id"]
+    page = client.get("/").text
+    row = page.split(">Prochlorperazine</a>")[1].split("</form>")[0]
+    # Just now or Other time, equally quiet. The logged time sets when the next one is OK, so no guesses.
+    assert "When did you take it?" in row and "btn-primary" not in row and " ago<" not in row
+    assert 'value="0">Just now' in row and ">Other time<" in row and 'name="pick_time"' in row
+    hour_ago = local_now(cfg) - timedelta(minutes=60)
+    client.post("/dose/quick", data={"medication_id": med, "ago": "pick", "pick_time": hour_ago.strftime("%H:%M"), "back": "/"})
+    with session(cfg.db_path) as conn:
+        first = conn.execute("SELECT taken_at FROM dose_logs WHERE medication_id = ?", (med,)).fetchone()["taken_at"]
+    assert first.startswith(hour_ago.strftime("%Y-%m-%d %H:%M"))
+    # A second one "just now" is 1 hour after the first: the label says every 6 hours, so it asks first.
+    r = client.post("/dose/quick", data={"medication_id": med, "ago": "0", "back": "/"})
+    assert "Check before you log this" in r.text or "sooner" in r.text.lower()
+    assert 'name="taken_at"' in r.text and 'name="ago"' not in r.text
+
+
+def test_rows_just_logged_get_marked_once(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=3))  # day 4
+    yesterday = (today(cfg) - timedelta(days=1)).isoformat()
+    with session(cfg.db_path) as conn:
+        cycle = schedule.cycle_for_date(conn, today(cfg))
+        dex = next(s for s in schedule.slots(conn, cycle, 3) if s.plan["med_name"] == "Dexamethasone")
+    client.post("/slot", data={"plan_id": dex.plan["id"], "slot": dex.key, "status": "taken", "when": "planned",
+                               "back": f"/?d={yesterday}"}, follow_redirects=False)
+    first = client.get(f"/?d={yesterday}").text
+    row = first.split(f'id="slot-{dex.plan["id"]}-')[0].rsplit('<div class="dose ', 1)[1]
+    assert "just-logged" in row
+    again = client.get(f"/?d={yesterday}").text  # the moment plays once, not on every visit
+    assert "just-logged" not in again
+
+
+def test_medicines_show_when_each_is_used_as_time_of_day_chips(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    page = client.get("/medicines").text
+    dex = page.split(">Dexamethasone</span>")[1].split("</li>")[0]
+    assert 'data-period="morning"' in dex and "8:00 AM" in dex and "Days 2–4" in dex
+    olz = page.split(">Olanzapine</span>")[1].split("</li>")[0]
+    assert 'data-period="bedtime"' in olz
+    ond = page.split(">Ondansetron</span>")[1].split("</li>")[0]
+    assert 'data-period="prn"' in ond and "As needed" in ond
+    assert "Scheduled, days" not in page  # the chips replace that text
+
+
+def test_reminder_problems_are_explained_in_plain_words():
+    from chemotracker import reminders
+    assert "didn't answer" in reminders.problem_text("couldn't reach https://ntfy.sh (timed out)")
+    assert "access token" in reminders.problem_text("ntfy answered 403: forbidden")
+    assert "start again on their own" in reminders.problem_text("ntfy answered 429")
+    assert "try again" in reminders.problem_text("something odd")
+
+
+def test_side_effect_chips_hide_the_native_checkbox(client, cfg):
+    setup_walkthrough(client, today(cfg))
+    with session(cfg.db_path) as conn:
+        med = conn.execute("SELECT id FROM medications WHERE name = 'Ondansetron'").fetchone()["id"]
+        log_id = store.log_dose(conn, med, local_now(cfg) - timedelta(hours=1), "1 tablet", None)
+    page = client.get(f"/dose/{log_id}").text
+    chips = page.split("Any side effects?")[1].split("</fieldset>")[0]
+    assert 'class="chip-toggle"' in chips and 'class="check"' not in chips
 
 
 def test_add_custom_medicine(client, cfg):
@@ -578,9 +983,10 @@ def test_moving_chemo_moves_later_cycles(client, cfg):
 def test_medicines_list_and_page_for_non_technical_users(client, cfg):
     setup_walkthrough(client, today(cfg))
     page = client.get("/medicines").text
-    assert "At home" in page and "Given at the clinic" in page
-    clinic_part = page.split("Given at the clinic")[1]
-    assert "Add the label details" not in clinic_part  # infusions have no bottle to copy
+    # Clinic infusions come with no bottle, so no "copy the label" nudge.
+    clinic_part = page.split('id="clinic-h">At the clinic</h2>')[1].split("</section>")[0]
+    assert "Doxorubicin" in clinic_part and 'class="tchip" data-period="clinic"' in clinic_part
+    assert "Add the label details" not in clinic_part
     with session(cfg.db_path) as conn:
         olz = conn.execute("SELECT id FROM medications WHERE info_key = 'olanzapine'").fetchone()["id"]
         dox = conn.execute("SELECT id FROM medications WHERE info_key = 'doxorubicin'").fetchone()["id"]
@@ -608,7 +1014,10 @@ def test_rerunning_setup_names_what_it_stops(client, cfg):
 
 def test_header_has_a_call_button(client, cfg):
     setup_walkthrough(client, today(cfg))
-    assert 'class="icon-link call-link" href="tel:555-0100"' in client.get("/").text
+    # From 9 PM to 7 AM the header calls the after-hours line (base.html night_call).
+    hour = local_now(cfg).hour
+    number = "555-0199" if hour >= 21 or hour < 7 else "555-0100"
+    assert f'class="icon-link call-link" href="tel:{number}"' in client.get("/").text
 
 
 def test_theme_controls(client, cfg):
@@ -618,6 +1027,7 @@ def test_theme_controls(client, cfg):
     assert settings.index("Light or dark</h2>") < settings.index("<h2>Care team</h2>")
     for value, label in (("auto", "Automatic"), ("light", "Light"), ("dark", "Dark")):
         assert f'value="{value}" data-theme-pick>{label}</label>' in settings
+    # Automatic follows the device, which already handles night. No separate timed or "Night" option.
     assert "Night" not in settings
     # Desktop sidebar has a one-tap switch. It stays hidden until the script can run it.
     home = client.get("/").text

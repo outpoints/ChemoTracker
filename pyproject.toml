@@ -1,6 +1,6 @@
 [project]
 name = "chemotracker"
-version = "0.4.0"
+version = "0.5.0"
 description = "Self-hosted chemotherapy supportive-medication tracker with Excel/CSV reports for the care team."
 readme = "README.md"
 license = "GPL-3.0-only"

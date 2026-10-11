@@ -3,11 +3,11 @@
 {% block content %}
 {% from "_history.html" import history_list with context %}
 <div class="page page-narrow">
-  <a class="btn btn-quiet" href="/settings" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Settings</a>
-  <div class="page-head" style="margin-top: var(--s2)">
+  <a class="btn btn-quiet back-link" href="/settings">{{ icon("arrow-left") }}Settings</a>
+  <div class="page-head">
     <div>
       <h1>Change history</h1>
-      <p class="sub">Every dose, symptom, medicine and setting that was added, changed or deleted, with who did it. Nothing here can be edited. Deleted doses and symptoms can be put back.</p>
+      <p class="sub">Every change, with who made it. Deleted doses and symptoms can be put back.</p>
     </div>
   </div>
   <div class="card card-pad">{{ history_list(events, show_subject=True, back="/history" ~ ("?page=" ~ page if page > 1 else "")) }}</div>

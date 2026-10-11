@@ -89,6 +89,11 @@ def parse_local(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("T", " ")[:16])
 
 
+def local_from_utc(iso: str) -> datetime:
+    """A stored UTC timestamp (like a backup's) as local wall-clock time."""
+    return datetime.fromisoformat(iso).astimezone(_TZ).replace(tzinfo=None)
+
+
 def fmt_local(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M")
 
@@ -276,7 +281,8 @@ class Slot:
         s = self.status(now)
         if s == "taken":
             when = parse_local(self.log["taken_at"]) if self.log else None
-            return f"Taken {fmt_time(when)}" if when else "Taken"
+            word = "Given" if self.kind == "clinic" else "Taken"
+            return f"{word} {fmt_time(when)}" if when else word
         if s == "skipped":
             return "Skipped"
         if s == "clinic":
@@ -366,18 +372,37 @@ class AsNeeded:
     def at_max(self) -> bool:
         return self.max_per_day is not None and self.count_today >= self.max_per_day
 
+    @property
+    def gap_known(self) -> bool:
+        return bool(self.gap_hours)
+
     def available(self, now: datetime) -> bool:
         if self.at_max() or not self.scheduled_today:
             return False
         return self.next_allowed is None or now >= self.next_allowed
 
+    def state(self, now: datetime) -> str:
+        """off (not planned today), max (daily limit reached), wait, ok, or open.
+
+        open means no wait time is saved, so the app can't say when the next one is OK.
+        It must never look like "OK to take now".
+        """
+        if not self.scheduled_today:
+            return "off"
+        if self.at_max():
+            return "max"
+        if not self.available(now):
+            return "wait"
+        return "ok" if self.gap_known else "open"
+
     def fraction(self, now: datetime) -> float:
-        """How far through the waiting gap we are (1.0 = OK now)."""
-        if self.at_max() or not self.scheduled_today:
+        """How far through the waiting gap we are (1.0 = OK now, 0.0 when the gap isn't known)."""
+        gap = self.gap_hours
+        if self.at_max() or not self.scheduled_today or not gap:
             return 0.0
-        if not (self.last_at and self.gap_hours) or self.available(now):
+        if not self.last_at or self.available(now):
             return 1.0
-        total = self.gap_hours * 3600
+        total = gap * 3600
         return min(max(real_diff(now, self.last_at).total_seconds() / total, 0.0), 1.0)
 
     def status_text(self, now: datetime) -> str:
@@ -386,13 +411,15 @@ class AsNeeded:
         if self.at_max():
             return f"Reached {self.max_per_day} today"
         if self.available(now):
-            return "OK to take now"
+            return "OK to take now" if self.gap_known else "Time between doses not saved"
         nxt = self.next_allowed
         assert nxt is not None
         prefix = "OK at" if nxt.date() == now.date() else f"OK {fmt_relative_day(nxt.date(), now.date()).lower()} at"
         return f"{prefix} {fmt_time(nxt)}"
 
     def wait_text(self, now: datetime) -> str:
+        if self.state(now) == "open":
+            return "Follow the label"
         nxt = self.next_allowed
         if nxt is None or self.available(now) or not self.scheduled_today:
             return ""
@@ -512,7 +539,7 @@ def as_needed_for_symptom(conn: sqlite3.Connection, symptom: str, now: datetime)
         else:
             # Respect the clinic's day limits (e.g. "Days 4-6 only").
             row.scheduled_today = False
-            row.schedule_note = "; ".join(days_text(p["start_day"], p["end_day"]) for p in prn_plans)
+            row.schedule_note = " and ".join(days_text(p["start_day"], p["end_day"]) for p in prn_plans)
         out.append(row)
     out.sort(key=lambda a: (not a.scheduled_today, a.name))
     return out
@@ -529,6 +556,53 @@ class Compartment:
 
     def all_done(self) -> bool:
         return bool(self.slots) and all(s.log is not None for s in self.slots)
+
+    def state(self, now: datetime) -> str:
+        """done, due (now, or the clinic dose on its day), late (today, past its window), upcoming, or missed."""
+        if self.all_done():
+            return "done"
+        open_ = {s.status(now) for s in self.slots if s.log is None}
+        if "due" in open_ or "clinic" in open_:
+            return "due"
+        if "late" in open_:
+            return "late"
+        if "upcoming" in open_:
+            return "upcoming"
+        return "missed"
+
+    def first_open(self) -> Slot | None:
+        return next((s for s in self.slots if s.log is None), None)
+
+    def open_now(self, now: datetime) -> list[Slot]:
+        """Doses here someone could log now: home doses that are due or past and not logged yet.
+
+        "Took all" covers only these. Not-yet-due doses stay out, so nobody marks a 10 AM pill taken at 8.
+        Clinic doses stay out too: the infusion team gives them one by one.
+        """
+        return [s for s in self.slots if s.log is None and s.kind != "clinic"
+                and s.status(now) in ("due", "late", "missed", "not_logged")]
+
+    def lid_text(self, now: datetime) -> str:
+        """The short line on the organizer lid: Done, Due now, Was due 8:00 AM, 9:30 PM, Not logged."""
+        st = self.state(now)
+        if st == "done":
+            return "Done"
+        if st == "due":
+            return "At the clinic" if self.key == "clinic" else "Due now"
+        nxt = self.first_open()
+        if st == "late" and nxt is not None and nxt.time:
+            return f"Was due {fmt_time(nxt.time)}"
+        if st == "upcoming" and nxt is not None:
+            return fmt_time(nxt.time) if nxt.time else "Planned"
+        return "Not logged"
+
+    def lid_short(self, now: datetime) -> str:
+        """The same, short enough for a lid a quarter of a phone wide."""
+        st = self.state(now)
+        nxt = self.first_open()
+        if st == "upcoming" and nxt is not None and nxt.time:
+            return fmt_time(nxt.time)
+        return {"done": "Done", "due": "Due now", "late": "Late", "upcoming": "Planned"}.get(st, "Missed")
 
 
 @dataclass
@@ -547,6 +621,32 @@ class DayPlan:
     def counts(self) -> tuple[int, int]:
         planned = self.scheduled + self.clinic
         return sum(1 for s in planned if s.log is not None), len(planned)
+
+    def all_compartments(self) -> list[Compartment]:
+        clinic = [Compartment("clinic", "At the clinic", self.clinic)] if self.clinic else []
+        return clinic + self.compartments
+
+    def lids(self) -> list[tuple[str, str, Compartment | None]]:
+        """The pill-organizer row: every time of day, empty ones included, plus the clinic on its day."""
+        by_key = {c.key: c for c in self.all_compartments()}
+        keys = (["clinic"] if "clinic" in by_key else []) + [k for k, _, _ in PERIODS]
+        names = {"clinic": "Clinic", **PERIOD_NAMES}
+        return [(k, names[k], by_key.get(k)) for k in keys]
+
+    def sections(self, now: datetime) -> list[tuple[str, Compartment | None]]:
+        """What Today lists, in order. On today: anything due first, then the as-needed shelf, then the rest
+        by time of day. Other days read top to bottom like the organizer."""
+        comps = self.all_compartments()
+        prn: list[tuple[str, Compartment | None]] = [("prn", None)] if self.as_needed else []
+        if self.date != now.date():
+            return [("comp", c) for c in comps] + prn
+        urgent = [c for c in comps if c.state(now) in ("due", "late")]
+        rest = [c for c in comps if c.state(now) not in ("due", "late")]
+        return [("comp", c) for c in urgent] + prn + [("comp", c) for c in rest]
+
+    def as_needed_by_readiness(self, now: datetime) -> list[AsNeeded]:
+        order = {"ok": 0, "open": 1, "wait": 2, "max": 3, "off": 4}
+        return sorted(self.as_needed, key=lambda a: (order[a.state(now)], a.next_allowed or now, a.name))
 
 
 def day_plan(conn: sqlite3.Connection, d: date, now: datetime) -> DayPlan:
@@ -581,12 +681,32 @@ def next_doses(conn: sqlite3.Connection, now: datetime, limit: int = 3) -> list[
     return found[:limit]
 
 
+def asks_if_it_helped(conn: sqlite3.Connection, log: sqlite3.Row) -> bool:
+    """Only as-needed medicine is taken to relieve something, so only it gets "Did it help?".
+
+    Scheduled prevention (anti-nausea, steroids), white-cell boosters, cancer pills and clinic doses can't be
+    judged from one dose. Doses logged at another time are stored as kind 'as_needed' whatever the medicine
+    is, so look at the plan: the dose's own plan if it has one, otherwise whether the medicine has an
+    as-needed plan at all.
+    """
+    if log["kind"] == "clinic":
+        return False
+    if log["plan_id"]:
+        row = conn.execute("SELECT kind FROM plans WHERE id = ?", (log["plan_id"],)).fetchone()
+        if row is not None:
+            return row["kind"] == "as_needed"
+    return conn.execute("SELECT 1 FROM plans WHERE medication_id = ? AND kind = 'as_needed' LIMIT 1",
+                        (log["medication_id"],)).fetchone() is not None
+
+
 def follow_ups(conn: sqlite3.Connection, now: datetime, limit: int = 3) -> list[sqlite3.Row]:
     """Recent doses still missing 'did it help / how was the dose'."""
     return conn.execute(
         """SELECT dl.*, m.name AS med_name, m.brand AS med_brand, m.info_key AS med_info
              FROM dose_logs dl JOIN medications m ON m.id = dl.medication_id
-            WHERE dl.status = 'taken' AND dl.kind != 'clinic' AND dl.helped IS NULL
+            WHERE dl.status = 'taken' AND dl.kind = 'as_needed' AND dl.helped IS NULL
+              AND EXISTS (SELECT 1 FROM plans p WHERE p.medication_id = dl.medication_id AND p.kind = 'as_needed'
+                                                AND (dl.plan_id IS NULL OR p.id = dl.plan_id))
               AND dl.taken_at BETWEEN ? AND ?
             ORDER BY dl.taken_at DESC LIMIT ?""",
         (fmt_local(now - FOLLOW_UP_WITHIN), fmt_local(now - FOLLOW_UP_AFTER), limit),
@@ -629,6 +749,8 @@ class RingDay:
     worst: int
     is_today: bool
     is_chemo: bool
+    is_past: bool = False
+    symptoms: list[tuple[str, int]] = field(default_factory=list)  # (name, worst score that day), worst first
 
     @property
     def state(self) -> str:
@@ -637,6 +759,13 @@ class RingDay:
         if self.done >= self.planned:
             return "done"
         return "partial" if self.done else "planned"
+
+    @property
+    def mark(self) -> str:
+        """How the dial draws this day. A past day with planned doses left unlogged is a gap, shown openly."""
+        if self.is_past and self.state in ("planned", "partial"):
+            return "gap"
+        return self.state
 
 
 def ring(conn: sqlite3.Connection, cycle: sqlite3.Row, today: date, fever_f: float = 100.4) -> list[RingDay]:
@@ -652,9 +781,13 @@ def ring(conn: sqlite3.Connection, cycle: sqlite3.Row, today: date, fever_f: flo
         )
     }
     worst: dict[str, int] = {}
+    named: dict[str, dict[str, int]] = {}
     for row in symptoms_between(conn, start, end):
         k = row["logged_at"][:10]
-        worst[k] = max(worst.get(k, 0), symptom_score(row, fever_f))
+        score = symptom_score(row, fever_f)
+        worst[k] = max(worst.get(k, 0), score)
+        name = sx.lookup(row["symptom"]).name if row["symptom"] != "other" else (row["label"] or "Other")
+        named.setdefault(k, {})[name] = max(named.get(k, {}).get(name, 0), score)
     out = []
     for dn in range(0, span + 1):
         d = date_of(cycle, dn)
@@ -669,6 +802,8 @@ def ring(conn: sqlite3.Connection, cycle: sqlite3.Row, today: date, fever_f: flo
                 worst=worst.get(d.isoformat(), 0),
                 is_today=d == today,
                 is_chemo=dn == 1,
+                is_past=d < today,
+                symptoms=sorted(named.get(d.isoformat(), {}).items(), key=lambda kv: (-kv[1], kv[0])),
             )
         )
     return out
@@ -685,6 +820,7 @@ class GridCell:
     skipped: list[sqlite3.Row] = field(default_factory=list)
     missing: int = 0
     upcoming: int = 0
+    times: list[str] = field(default_factory=list)  # planned clock times this day
 
 
 @dataclass
@@ -720,6 +856,8 @@ def grid(conn: sqlite3.Connection, cycle: sqlite3.Row, now: datetime) -> tuple[l
     for s in slots(conn, cycle):
         cell = rows[(s.plan["medication_id"], s.kind)].cells[s.day]
         cell.planned += 1
+        if s.time:
+            cell.times.append(s.time)
         if s.log is None:
             if s.status(now) in ("missed", "late", "not_logged"):
                 cell.missing += 1

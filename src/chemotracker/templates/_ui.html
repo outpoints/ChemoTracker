@@ -5,63 +5,157 @@
 {%- endmacro %}
 
 {% macro period_icon(key) -%}
-{{ icon({"morning": "sunrise", "afternoon": "sun", "evening": "sunset", "bedtime": "moon", "prn": "pill", "clinic": "hospital"}.get(key, "pill"), "c-icon") }}
+{{ icon({"morning": "sunrise", "afternoon": "sun", "evening": "sunset", "bedtime": "moon", "lastnight": "moon", "prn": "pill", "clinic": "hospital"}.get(key, "pill"), "c-icon") }}
 {%- endmacro %}
 
 {% macro route_icon(route) -%}
 {{ icon({"injection": "syringe", "iv": "hospital", "topical": "hand"}.get(route, "pill")) }}
 {%- endmacro %}
 
-{% macro status_pill(slot, now) -%}
+{#- "When was it taken?" under a Taken button. A <details>, so it opens and works without scripts.
+    Exact times only: Just now, or Other time with a clock. No planned-time or "N min ago" guesses.
+    choices: (field, value, label) buttons, empty on a past day. other: the Other time row. -#}
+{% macro take_panel(label, btn_class, question, choices, other=None, lead=True) -%}
+<details class="take" data-take>
+  <summary class="btn {{ btn_class }} btn-take" data-prn-button><span class="take-closed">{{ icon("check") }}{{ label }}</span><span class="take-open"><span>{{ question }}</span><span class="take-cancel">Cancel</span></span></summary>
+  <div class="take-panel">
+    {%- if choices %}
+    <div class="take-opts">
+      {%- for field, value, text in choices %}
+      <button class="btn {{ 'btn-primary' if loop.first and lead else 'btn-secondary' }}" type="submit" name="{{ field }}" value="{{ value }}">{{ text }}</button>
+      {%- endfor %}
+    </div>
+    {%- endif %}
+    {%- if other %}
+    <div class="take-other">
+      <label for="{{ other.id }}">Other time</label>
+      <input id="{{ other.id }}" type="time" name="{{ other.field }}" value="{{ other.default }}">
+      <button class="btn btn-secondary" type="submit" name="{{ other.name }}" value="{{ other.value }}">Log it</button>
+    </div>
+    {%- endif %}
+  </div>
+</details>
+{%- endmacro %}
+
+{% macro status_pill(slot, now, edit=False) -%}
 {%- set st = slot.status(now) -%}
 {%- set cls = "tonight" if (st == "upcoming" and slot.period == "bedtime" and slot.date == now.date()) else st -%}
 <span class="pill pill-{{ cls }}">
   {%- if st == "taken" %}{{ icon("check") }}{% elif st == "due" %}{{ icon("clock") }}{% elif cls == "tonight" %}{{ icon("moon") }}{% elif st == "skipped" %}{{ icon("x") }}{% endif -%}
   {{ slot.status_text(now) }}
+  {%- if edit %}{{ icon("pencil", "pill-edit") }}{% endif %}
 </span>
 {%- endmacro %}
 
-{% macro ring_svg(ring, span, cycle, size=240, compact=False, link=None) -%}
-{%- set pts = ring_points(ring, size) -%}
+{% macro ring_svg(ring, span, cycle, size=240, compact=False, day_href=None) -%}
+{#- The cycle dial: one dot per day around a ring, chemo day at the top. Filled = every dose logged,
+    outlined = doses planned, amber = a past day with doses not logged, dark = chemo day, ringed = today.
+    A small dot outside the ring marks symptoms (its colour is how bad). -#}
+{%- set g = ring_geometry(ring, size, compact) -%}
 {%- set cur = (ring | selectattr("is_today") | list | first) -%}
-<svg class="ring-svg" viewBox="-6 -6 {{ size + 12 }} {{ size + 12 }}" role="img"
-     aria-label="Cycle {{ cycle.number }}{% if cur %}, day {{ cur.day }} of {{ cycle.length_days }}{% endif %}">
-  <circle class="ring-track" cx="{{ size / 2 }}" cy="{{ size / 2 }}" r="{{ size / 2 - 22 }}"/>
-  {%- for d, x, y, ox, oy in pts %}
-  {%- set r = (size / 40) if not compact else (size / 30) %}
-  {%- if d.worst > 0 %}<circle class="ring-sym s{{ d.worst }}" cx="{{ ox }}" cy="{{ oy }}" r="{{ r * 0.5 }}"><title>Symptoms logged</title></circle>{% endif %}
-  <circle class="ring-dot {{ 'chemo' if d.is_chemo else d.state }}" cx="{{ x }}" cy="{{ y }}" r="{{ r }}"><title>{{ day_label(d.day) }} · {{ fmt_day(d.date) }}{% if d.planned %} · {{ d.done }} of {{ d.planned }} doses logged{% endif %}</title></circle>
-  {%- if d.is_today %}<circle class="ring-today" cx="{{ x }}" cy="{{ y }}" r="{{ r + 5 }}"/>{% endif %}
-  {%- if not compact and (d.day == 1 or d.day % 7 == 0) %}<text class="ring-label" x="{{ (x * 0.82 + size / 2 * 0.18) }}" y="{{ (y * 0.82 + size / 2 * 0.18) + 4 }}" text-anchor="middle" font-size="{{ size / 22 }}">{{ d.day }}</text>{% endif %}
+{%- set full = ring | selectattr("mark", "equalto", "done") | list | length -%}
+{%- set gaps = ring | selectattr("mark", "equalto", "gap") | list | length -%}
+<svg class="dial {{ 'dial-compact' if compact }}" viewBox="0 0 {{ size }} {{ size }}" role="img"
+     aria-label="Cycle {{ cycle.number }}{% if cur %}, day {{ cur.day }} of {{ cycle.length_days }}{% endif %}. {{ full }} {{ 'day' if full == 1 else 'days' }} with every dose logged{% if gaps %}, {{ gaps }} with doses not logged{% endif %}.">
+  <circle class="dial-track" cx="{{ g.c }}" cy="{{ g.c }}" r="{{ g.r }}" stroke-width="{{ g.track }}"/>
+  {%- for p in g.dots %}
+  {%- set d = p.day %}
+  {%- if day_href %}<a class="dial-day" href="{{ day_href }}{{ d.day }}">{% endif %}
+  <g class="day {{ 'chemo' if d.is_chemo else d.mark }}">
+    <title>{{ day_label(d.day) }} · {{ fmt_day(d.date) }}{% if d.planned %} · {{ d.done }} of {{ d.planned }} doses logged{% endif %}{% if d.worst %} · symptoms logged{% endif %}</title>
+    {%- if d.is_today %}<circle class="dial-today" cx="{{ p.x }}" cy="{{ p.y }}" r="{{ g.halo }}" stroke-width="{{ g.halo_w }}"/>{% endif %}
+    <circle class="dial-dot" cx="{{ p.x }}" cy="{{ p.y }}" r="{{ g.dot }}" stroke-width="{{ g.stroke }}"/>
+    {%- if not compact and d.worst > 0 %}<circle class="dial-sym s{{ d.worst }}" cx="{{ p.sx }}" cy="{{ p.sy }}" r="{{ g.sym }}"/>{% endif %}
+  </g>
+  {%- if day_href %}</a>{% endif %}
+  {%- if not compact and (d.day == 1 or (d.day > 0 and d.day % 7 == 0)) %}<text class="dial-label" x="{{ p.lx }}" y="{{ p.ly }}" text-anchor="middle" font-size="{{ (size / 19) | round(1) }}">{{ d.day }}</text>{% endif %}
   {%- endfor %}
   {%- if cur %}
-  <text class="ring-center-day" x="{{ size / 2 }}" y="{{ size / 2 + (size / 40) }}" text-anchor="middle" font-size="{{ size / 7 }}">Day {{ cur.day }}</text>
-  {%- if not compact %}<text class="ring-center-sub" x="{{ size / 2 }}" y="{{ size / 2 + size / 7.5 }}" text-anchor="middle" font-size="{{ size / 18 }}">of {{ cycle.length_days }}</text>{% endif %}
+  {%- if compact %}
+  <text class="dial-num" x="{{ g.c }}" y="{{ g.c + size * 0.11 }}" text-anchor="middle" font-size="{{ (size * 0.32) | round(1) }}">{{ cur.day }}</text>
   {%- else %}
-  <text class="ring-center-sub" x="{{ size / 2 }}" y="{{ size / 2 + 6 }}" text-anchor="middle" font-size="{{ size / 14 }}">Cycle {{ cycle.number }}</text>
+  <text class="dial-num" x="{{ g.c }}" y="{{ g.c + size * 0.02 }}" text-anchor="middle" font-size="{{ (size / 7) | round(1) }}">Day {{ cur.day }}</text>
+  <text class="dial-sub" x="{{ g.c }}" y="{{ g.c + size * 0.13 }}" text-anchor="middle" font-size="{{ (size / 17) | round(1) }}">of {{ cycle.length_days }}</text>
+  {%- endif %}
+  {%- else %}
+  <text class="dial-sub" x="{{ g.c }}" y="{{ g.c + size * 0.03 }}" text-anchor="middle" font-size="{{ (size / 13) | round(1) }}">Cycle {{ cycle.number }}</text>
   {%- endif %}
 </svg>
 {%- endmacro %}
 
 {% macro ring_legend() -%}
-<div class="ring-legend">
-  <span><i class="chemo"></i>Day 1 · chemo</span>
-  <span><i class="done"></i>All doses logged</span>
-  <span><i class="planned"></i>Doses planned</span>
-  <span><i class="sym"></i>Symptoms logged</span>
-</div>
+<ul class="dial-legend" aria-label="How to read the dial">
+  <li><i class="k-done"></i>All logged</li>
+  <li><i class="k-planned"></i>Planned</li>
+  <li><i class="k-gap"></i>Not logged</li>
+  <li><i class="k-chemo"></i>Chemo day</li>
+  <li><i class="k-today"></i>Today</li>
+  <li><i class="k-sym"></i>Symptoms</li>
+</ul>
+{%- endmacro %}
+
+{% macro lid_strip(plan, now, link=True) -%}
+{#- The pill organizer, one lid per time of day. Empty compartments stay visible, like the real box. -#}
+<nav class="lids" aria-label="Doses by time of day">
+  {%- for key, name, comp in plan.lids() %}
+  {%- set st = comp.state(now) if comp else "none" %}
+  {%- if comp and link %}<a class="lid {{ st }}" data-period="{{ key }}" href="#c-{{ key }}" aria-label="{{ name }}: {{ comp.lid_text(now) }}">{% else %}<div class="lid {{ st }}" data-period="{{ key }}" aria-label="{{ name }}: {{ comp.lid_text(now) if comp else 'nothing planned' }}" role="group">{% endif %}
+    {{ period_icon(key) }}
+    <span class="lid-text" aria-hidden="true"><span class="lid-name">{{ name }}</span>
+      <span class="lid-state">{% if st == "done" %}{{ icon("check") }}{% endif %}{{ comp.lid_short(now) if comp else "None" }}</span></span>
+  {%- if comp and link %}</a>{% else %}</div>{% endif %}
+  {%- endfor %}
+</nav>
 {%- endmacro %}
 
 {% macro countdown(an, now) -%}
+{#- States come from AsNeeded.state: ok, wait, open (no wait time saved), max, off. -#}
+{%- set st = an.state(now) -%}
 {%- set frac = an.fraction(now) -%}
-{%- set ok = an.available(now) -%}
 {%- set c = 113.1 -%}
-<svg class="countdown {{ 'ok' if ok }}" viewBox="0 0 44 44" aria-hidden="true"
-     {% if not ok and an.next_allowed and an.scheduled_today and not an.at_max() %}data-remaining="{{ ((an.next_allowed - now).total_seconds()) | int }}" data-total="{{ (an.gap_hours * 3600) | int }}"{% endif %}>
+<svg class="countdown {{ st }}" viewBox="0 0 44 44" aria-hidden="true"
+     {% if st == "wait" and an.next_allowed %}data-remaining="{{ ((an.next_allowed - now).total_seconds()) | int }}" data-total="{{ (an.gap_hours * 3600) | int }}"{% endif %}>
   <circle class="track" cx="22" cy="22" r="18"/>
+  {%- if st in ("ok", "wait") %}
   <circle class="bar" cx="22" cy="22" r="18" stroke-dasharray="{{ c }}" stroke-dashoffset="{{ (c * (1 - frac)) | round(2) }}"/>
-  {%- if ok %}<path class="tick" d="M15 22.5l4.5 4.5 9-10"/>{% elif an.scheduled_today and not an.at_max() %}<text x="22" y="26" text-anchor="middle" data-left>{{ short_wait(an, now) }}</text>{% else %}<path class="track" d="M15 22h14"/>{% endif %}
+  {%- endif %}
+  {%- if st == "ok" %}<path class="tick" d="M15 22.5l4.5 4.5 9-10"/>
+  {%- elif st == "wait" %}<text x="22" y="26" text-anchor="middle" data-left>{{ short_wait(an, now) }}</text>
+  {%- elif st != "open" %}<path class="track" d="M15 22h14"/>{% endif %}
 </svg>
+{%- endmacro %}
+
+{% macro prn_row(an, now, today, people, back_url, reason=None, link=True, logged=()) -%}
+{#- One as-needed medicine: its countdown ring, when the next one is OK, and one button. -#}
+{%- set st = an.state(now) -%}
+<div class="prn-row {{ st }}{{ ' just-logged' if an.last and an.last.id in logged }}">
+  {{ countdown(an, now) }}
+  <div class="prn-info">
+    <div class="dose-name">{% if link %}<a href="/medicines/{{ an.medication_id }}">{{ an.name }}</a>{% else %}{{ an.name }}{% endif %}</div>
+    <div class="prn-status"><strong data-status>{{ an.status_text(now) }}</strong> <span data-wait>{{ an.wait_text(now) }}</span></div>
+    <div class="dose-detail">
+      {%- set facts = [an.strength, ("every " ~ (an.gap_hours | round(1) | string | replace(".0", "")) ~ " hr") if an.gap_hours, ("up to " ~ an.max_per_day ~ " a day") if an.max_per_day] | select | list %}
+      {{- facts | join(" · ") }}
+      {%- if an.last_at %}{% set ld = an.last_at.date() %}{{ " · " if facts }}last {% if ld == today %}{% elif (today - ld).days == 1 %}yesterday {% else %}{{ fmt_day(ld) }} {% endif %}{{ fmt_time(an.last_at) }}{% if an.last.logged_by and people.get(an.last.logged_by) %}, {{ people[an.last.logged_by].name }}{% endif %}{% endif -%}
+    </div>
+    {%- if not an.scheduled_today %}<div class="dose-detail">Your schedule has it on {{ an.schedule_note or "other days" }}. Check with your care team before taking it today.</div>{% endif %}
+    {%- if an.scheduled_today and not an.gap_known %}<a class="btn btn-quiet btn-sm prn-fix" href="/medicines/{{ an.medication_id }}?edit=1#gap">{{ icon("pencil") }}Add time between doses</a>{% endif %}
+  </div>
+  {%- if an.scheduled_today %}
+  <form class="prn-actions" method="post" action="/dose/quick">
+    <input type="hidden" name="medication_id" value="{{ an.medication_id }}">
+    <input type="hidden" name="plan_id" value="{{ an.plan.id if an.plan else '' }}">
+    {% if reason %}<input type="hidden" name="reason" value="{{ reason }}">{% endif %}
+    <input type="hidden" name="back" value="{{ back_url }}">
+    {#- As-needed: the time sets when the next one is OK, so it always asks. The spacing check uses the time picked. #}
+    {{ take_panel("Took one", "btn-secondary", "When did you take it?",
+                  [("ago", "0", "Just now")],
+                  {"id": "pt-" ~ an.medication_id, "field": "pick_time", "name": "ago", "value": "pick", "default": now.strftime("%H:%M")},
+                  lead=False) }}
+    {#- lead=False: as-needed choices stay equally quiet. The app never nudges anyone toward taking one. #}
+  </form>
+  {%- endif %}
+</div>
 {%- endmacro %}
 
 {% macro call_card(prefs, urgent=False, title="Call your care team") -%}
@@ -70,12 +164,12 @@
   <div class="grow">
     <h3>{{ title }}</h3>
     {%- if prefs.clinic_phone or prefs.after_hours_phone %}
-    <div class="stack-sm" style="margin-top: var(--s2)">
+    <div class="stack-sm">
       {%- if prefs.clinic_phone %}<div><a class="phone-link" href="tel:{{ prefs.clinic_phone | replace(' ', '') }}">{{ prefs.clinic_phone }}</a> <span class="meta">{{ prefs.clinic_name or "Clinic" }}</span></div>{% endif %}
       {%- if prefs.after_hours_phone %}<div><a class="phone-link" href="tel:{{ prefs.after_hours_phone | replace(' ', '') }}">{{ prefs.after_hours_phone }}</a> <span class="meta">After hours</span></div>{% endif %}
     </div>
     {%- else %}
-    <p class="meta" style="margin-top: var(--s1)">Add your care team's numbers in <a href="/settings">Settings</a>.</p>
+    <p class="meta">Add your care team's numbers in <a href="/settings">Settings</a>.</p>
     {%- endif %}
     {%- if prefs.call_if %}
     <ul>{% for line in prefs.call_if.splitlines() if line.strip() %}<li>{{ line }}</li>{% endfor %}</ul>
@@ -121,3 +215,40 @@
   <p class="source">{{ source_note }} <a href="{{ info.source }}" target="_blank" rel="noopener">MedlinePlus page {{ icon("external") }}</a></p>
 </div>
 {%- endmacro %}
+
+{# At home, grouped by type, then At the clinic as one list. The caller renders each <li> (m, at_clinic). #}
+{% macro med_sections(home_groups, clinic) -%}
+{% if home_groups %}
+<section class="med-place" aria-labelledby="home-h">
+  <h2 class="med-place-h" id="home-h">At home</h2>
+  {% for key, name, blurb, group in home_groups %}
+  <section class="med-group" aria-labelledby="g-{{ key }}">
+    <div class="section-title"><h3 id="g-{{ key }}">{{ name }}</h3><span class="meta">{{ blurb }}</span></div>
+    <div class="card"><ul class="list">{% for m in group %}{{ caller(m, False) }}{% endfor %}</ul></div>
+  </section>
+  {% endfor %}
+</section>
+{% endif %}
+{% if clinic %}
+<section class="med-place" aria-labelledby="clinic-h">
+  <div class="section-title med-place-title"><h2 class="med-place-h" id="clinic-h">At the clinic</h2><span class="meta">Given by the infusion team</span></div>
+  <div class="card"><ul class="list">{% for m in clinic %}{{ caller(m, True) }}{% endfor %}</ul></div>
+</section>
+{% endif %}
+{%- endmacro %}
+
+{#- When a medicine is used, in Today's compartment colours: a clock time in its time-of-day tint,
+    "As needed" in the shelf grey, "Clinic" in the clinic teal. Replaces "Scheduled ... at 8:00 AM" text. -#}
+{% macro tchip(kind, time=None, label=None) -%}
+{%- if kind == "clinic" %}<span class="tchip" data-period="clinic">{{ icon("hospital") }}Clinic</span>
+{%- elif kind == "as_needed" %}<span class="tchip" data-period="prn">{{ icon("pill") }}As needed</span>
+{%- else %}{% set per = period_of(time, label) %}<span class="tchip" data-period="{{ per }}">{{ period_icon(per) }}{{ fmt_time(time) if time else period_names[per] }}</span>{% endif -%}
+{%- endmacro %}
+
+{% macro plan_line(p) -%}
+<span class="plan-line">
+  {%- if p.kind == "scheduled" and p.times %}{% for t in plan_times(p) %}{{ tchip("scheduled", t, p.label) }}{% endfor %}{% else %}{{ tchip(p.kind) }}{% endif -%}
+  <span class="plan-days">{{ days_text(p.start_day, p.end_day) }}</span>
+</span>
+{%- endmacro %}
+

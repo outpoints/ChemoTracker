@@ -15,7 +15,7 @@
     const eff = effectiveTheme();
     // Browser bars (iPhone status bar, Android toolbar) follow the chosen theme, not only the device.
     const canvas = getComputedStyle(document.documentElement).getPropertyValue("--canvas").trim();
-    $$('meta[name="theme-color"]').forEach((m) => { if (currentTheme() === "auto") m.content = m.media.includes("dark") ? "#0c161a" : "#f2f5f4"; else if (canvas) m.content = canvas; });
+    $$('meta[name="theme-color"]').forEach((m) => { if (currentTheme() === "auto") m.content = m.media.includes("dark") ? "#081114" : "#ebf0ef"; else if (canvas) m.content = canvas; });
     $$("[data-theme-toggle] [data-when]").forEach((el) => { el.hidden = el.dataset.when !== eff; });
     $$("[data-theme-pick]").forEach((input) => { input.checked = input.value === currentTheme(); });
   };
@@ -33,6 +33,107 @@
   });
   if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener("change", syncTheme);
   syncTheme();
+
+  // One-time messages: close with the X or Escape. The greeting fades on its own unless you're on it.
+  $$(".toast").forEach((toast) => {
+    const close = () => {
+      const hadFocus = toast.contains(document.activeElement);
+      toast.remove();
+      const main = document.getElementById("main");
+      if (hadFocus && main) { main.setAttribute("tabindex", "-1"); main.focus({ preventScroll: true }); }
+    };
+    const x = toast.querySelector("[data-toast-close]");
+    if (x) x.addEventListener("click", (e) => { e.preventDefault(); close(); });
+    toast.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+    if (toast.hasAttribute("data-toast-auto")) {
+      let timer;
+      const start = () => { clearTimeout(timer); timer = setTimeout(() => { toast.classList.add("is-leaving"); setTimeout(close, 260); }, 8000); };
+      const stop = () => clearTimeout(timer);
+      toast.addEventListener("mouseenter", stop); toast.addEventListener("mouseleave", start);
+      toast.addEventListener("focusin", stop); toast.addEventListener("focusout", start);
+      start();
+    }
+  });
+
+  // Controls that need this script stay hidden without it.
+  $$("[data-js-only]").forEach((el) => { el.hidden = false; });
+  // Copy buttons (the reminder name).
+  $$("[data-copy]").forEach((btn) => {
+    const src = document.getElementById(btn.dataset.copy);
+    if (!src || !navigator.clipboard) return;
+    btn.hidden = false;
+    btn.addEventListener("click", () => navigator.clipboard.writeText(src.textContent.trim()).then(() => {
+      btn.textContent = "Copied"; setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+    }));
+  });
+
+  // Organizer lids on Today jump to their compartment and open it.
+  $$(".lids a.lid").forEach((a) => a.addEventListener("click", () => {
+    const target = document.getElementById((a.getAttribute("href") || "").slice(1));
+    if (target && target.tagName === "DETAILS") target.open = true;
+  }));
+
+  // "When was it taken?" panels: one open at a time, and the panel is scrolled into view when it opens.
+  $$("details[data-take]").forEach((d) => d.addEventListener("toggle", () => {
+    if (!d.open) return;
+    $$("details[data-take][open]").forEach((o) => { if (o !== d) o.open = false; });
+    const panel = d.querySelector(".take-panel");
+    if (panel && panel.scrollIntoView) panel.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }));
+
+  // "Log a dose": picking a medicine fills in its dose and what the label says. A clinic medicine on a day
+  // it isn't given asks first, in a sheet from the bottom. Without scripts the server asks on a check page.
+  const medSel = document.querySelector("select[data-med-select]");
+  if (medSel) {
+    const form = medSel.form;
+    const dose = form.querySelector("[data-dose-input]");
+    const facts = form.querySelector("[data-med-facts]");
+    const ok = form.querySelector("[data-clinic-ok]");
+    const sheet = document.getElementById("clinic-sheet");
+    let doseTyped = false;
+    if (dose) dose.addEventListener("input", () => { doseTyped = true; });
+    const fill = () => {
+      const o = medSel.selectedOptions[0];
+      if (!o || !o.value) return;
+      if (dose && !doseTyped) dose.value = o.dataset.dose || "";
+      const line = [o.dataset.directions ? "Label: " + o.dataset.directions : "", o.dataset.status || ""].filter(Boolean).join(". ");
+      if (facts) { facts.textContent = line; facts.hidden = !line; }
+      if (ok) ok.value = "";
+    };
+    medSel.addEventListener("change", () => {
+      fill();
+      const note = medSel.selectedOptions[0] && medSel.selectedOptions[0].dataset.clinicNote;
+      if (note && sheet && typeof sheet.showModal === "function") {
+        sheet.querySelector("[data-sheet-text]").textContent = note;
+        sheet.returnValue = "";
+        sheet.showModal();
+      }
+    });
+    if (sheet) {
+      sheet.addEventListener("close", () => {
+        if (sheet.returnValue === "go") { if (ok) ok.value = "1"; return; }
+        medSel.value = "";  // "Pick another medicine", Escape, or a tap outside
+        if (facts) facts.hidden = true;
+        medSel.focus();
+      });
+      // A tap on the dimmed page closes it (the form fills the sheet, so only the backdrop hits the dialog).
+      sheet.addEventListener("click", (e) => { if (e.target === sheet) sheet.close(); });
+    }
+  }
+
+  // Optional choices ("How was the dose?"): tap the chosen answer again to clear it. Saving with none picked stores none.
+  $$(".segmented[data-clearable]").forEach((group) => {
+    let wasChecked = null;
+    group.addEventListener("pointerdown", (e) => {
+      const label = e.target.closest("label");
+      const input = label && label.querySelector("input[type=radio]");
+      wasChecked = input && input.checked ? input : null;
+    });
+    group.addEventListener("click", (e) => {
+      if (e.target.matches("input[type=radio]") && e.target === wasChecked) e.target.checked = false;
+      if (e.target.matches("input[type=radio]")) wasChecked = null;
+    });
+  });
 
   // Confirm destructive actions.
   $$("form[data-confirm]").forEach((form) => {
@@ -238,9 +339,9 @@
       const total = parseFloat(svg.dataset.total) || 1;
       const bar = svg.querySelector(".bar");
       const label = svg.querySelector("[data-left]");
-      const box = svg.closest(".prn-when");
+      const box = svg.closest(".prn-row");
       if (left <= 0) {
-        svg.classList.add("ok");
+        svg.classList.replace("wait", "ok");
         svg.removeAttribute("data-remaining");
         bar.setAttribute("stroke-dashoffset", "0");
         if (label) label.remove();
@@ -248,11 +349,10 @@
         t.setAttribute("class", "tick"); t.setAttribute("d", "M15 22.5l4.5 4.5 9-10");
         svg.appendChild(t);
         if (box) {
-          box.classList.add("ok");
+          box.classList.replace("wait", "ok");
           const s = box.querySelector("[data-status]"); if (s) s.textContent = "OK to take now";
           const w = box.querySelector("[data-wait]"); if (w) w.textContent = "";
-          const btn = box.parentElement.querySelector("[data-prn-button]");
-          if (btn) { btn.classList.remove("btn-secondary"); btn.classList.add("btn-primary"); }
+          const btn = box.querySelector("[data-prn-button]");
         }
         return;
       }

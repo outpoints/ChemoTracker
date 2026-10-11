@@ -1,100 +1,161 @@
 {% extends "base.html" %}
-{% from "_ui.html" import icon, status_pill, by_tag %}
-{% macro dose_row(slot, now, back_url, people) -%}
+{% from "_ui.html" import icon, status_pill, by_tag, take_panel %}
+{#- "Did it help? Any side effects?" for recent as-needed doses (schedule.follow_ups). Optional, so it stays
+    folded below the as-needed shelf and never pushes due doses down. Saving one reopens it while more remain. -#}
+{% macro ask_section(items, people, back_url, open_it) -%}
+{%- set back_ask = back_url ~ ("&" if "?" in back_url else "?") ~ "ask=1#c-ask" %}
+<details class="compartment ask" data-period="prn" id="c-ask" {% if open_it %}open{% endif %}>
+  <summary>{{ icon("notebook-pen", "c-icon") }}<span class="c-title"><span class="c-name">Any side effects from your medicine?</span><span class="c-meds">Optional · {{ items | length }} recent {{ "dose" if items | length == 1 else "doses" }}</span></span>{{ icon("chevron-down", "chev") }}</summary>
+  <div class="c-body">
+    {%- for f in items %}
+    <form class="follow" method="post" action="/dose/{{ f.id }}/follow">
+      <input type="hidden" name="back" value="{{ back_ask }}">
+      <div class="q">How did the {{ f.med_name }} at {{ fmt_time(f.taken_at) }} go?</div>
+      {% if f.logged_by and people.get(f.logged_by) %}<div class="meta">Logged by {{ people[f.logged_by].name }}</div>{% endif %}
+      <div class="stack-sm">
+        <div class="meta">Did it help?</div>
+        <div class="segmented" role="radiogroup">
+          {% for k, v in helped_names.items() %}<label><input type="radio" name="helped" value="{{ k }}" required>{{ v }}</label>{% endfor %}
+        </div>
+        <div class="meta">How was the dose? (optional)</div>
+        <div class="segmented" role="radiogroup" data-clearable>
+          {% for k, v in feel_names.items() %}<label><input type="radio" name="dose_feel" value="{{ k }}">{{ v }}</label>{% endfor %}
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn btn-primary" type="submit">Save</button>
+        <a class="btn btn-quiet" href="/dose/{{ f.id }}?back_to={{ back_ask | urlencode }}">Add side effects or notes</a>
+      </div>
+    </form>
+    {%- endfor %}
+  </div>
+</details>
+{%- endmacro %}
+
+{% macro dose_row(slot, now, back_url, people, is_today=True, logged=()) -%}
 {%- set p = slot.plan -%}
-<div class="dose {{ 'is-done' if slot.log }}" id="slot-{{ p.id }}-{{ slot.key | replace(' ', '-') | replace(':', '') }}">
+{%- set st = slot.status(now) -%}
+{%- set urgent = st in ("due", "late", "clinic") -%}
+<div class="dose {{ 'is-done' if slot.log }}{{ ' is-urgent' if urgent and not slot.log }}{{ ' just-logged' if slot.log and slot.log.id in logged }}" id="slot-{{ p.id }}-{{ slot.key | replace(' ', '-') | replace(':', '') }}">
   <div class="dose-time">
     {%- if slot.time %}{{ fmt_time(slot.time) | replace(' AM', '') | replace(' PM', '') }}<small>{{ 'AM' if slot.time < '12:00' else 'PM' }}</small>
-    {%- else %}{{ icon("iv") }}{% endif -%}
+    {%- else %}{{ icon("hospital") }}{% endif -%}
   </div>
-  <div>
-    <div class="dose-name"><a href="/medicines/{{ p.medication_id }}">{{ p.med_name }}</a>{% if p.med_strength %} <span class="meta">{{ p.med_strength }}</span>{% endif %}</div>
-    {%- set detail = [slot.dose, p.label] | select | join(" · ") %}
+  <div class="dose-info">
+    <div class="dose-name"><a href="/medicines/{{ p.medication_id }}">{{ p.med_name }}</a></div>
+    {%- set detail = [p.med_strength, slot.dose, p.label] | select | join(" · ") %}
     {%- if detail %}<div class="dose-detail">{{ detail }}</div>{% endif %}
     {%- set prep = slot.prep_text(now) %}
     {%- if prep %}<div class="dose-prep {{ 'is-now' if prep.endswith(' now') }}">{{ icon("refrigerator" if "fridge" in prep else "clock") }}<span>{{ prep }}</span></div>{% endif %}
-    <div class="dose-status">{{ status_pill(slot, now) }}{% if slot.log %} {{ by_tag(people, slot.log.logged_by, slot.log.updated_by) }}{% endif %}</div>
+    {#- The compartment header already says Due now / Was due / the time. Rows only add what happened. #}
+    {%- if slot.log or st in ("missed", "not_logged") %}
+    <div class="dose-status">
+      {%- if slot.log %}<a class="pill-link" href="/dose/{{ slot.log.id }}?back_to={{ back_url | urlencode }}" aria-label="{{ slot.status_text(now) }}. Change the time or add notes">{{ status_pill(slot, now, edit=True) }}</a> {{ by_tag(people, slot.log.logged_by, slot.log.updated_by) }}
+      {%- else %}{{ status_pill(slot, now) }}{% endif -%}
+    </div>
+    {%- endif %}
   </div>
   <div class="dose-side">
     {%- if slot.log %}
-    <div class="dose-done">
-      {%- if slot.log.status == "taken" and slot.kind != "clinic" %}
-      <a class="btn btn-soft btn-sm" href="/dose/{{ slot.log.id }}">{{ "Edit notes" if slot.log.helped else "How did it go?" }}</a>
-      {%- endif %}
-      <form class="inline-form" method="post" action="/dose/{{ slot.log.id }}/undo">
-        <input type="hidden" name="back" value="{{ back_url }}">
-        <button class="btn btn-quiet btn-sm" type="submit">Undo</button>
-      </form>
-    </div>
+    {%- if slot.log.status == "taken" and slot.kind != "clinic" %}
+    <a class="btn btn-quiet btn-sm" href="/dose/{{ slot.log.id }}?back_to={{ back_url | urlencode }}">{{ "Edit notes" if slot.log.helped else "How did it go?" }}</a>
+    {%- endif %}
+    <form class="inline-form" method="post" action="/dose/{{ slot.log.id }}/undo">
+      <input type="hidden" name="back" value="{{ back_url }}">
+      <button class="btn btn-quiet btn-sm" type="submit">Undo</button>
+    </form>
     {%- elif slot.date > now.date() %}
     {%- else %}
-    <div class="dose-actions">
-      <form method="post" action="/slot">
-        <input type="hidden" name="plan_id" value="{{ p.id }}"><input type="hidden" name="slot" value="{{ slot.key }}">
-        <input type="hidden" name="back" value="{{ back_url }}"><input type="hidden" name="status" value="taken">
-        <button class="btn btn-primary" type="submit">{{ icon("check") }}{{ "Given" if slot.kind == "clinic" else "Taken" }}</button>
-      </form>
-      <form method="post" action="/slot">
-        <input type="hidden" name="plan_id" value="{{ p.id }}"><input type="hidden" name="slot" value="{{ slot.key }}">
-        <input type="hidden" name="back" value="{{ back_url }}"><input type="hidden" name="status" value="skipped">
-        <button class="btn btn-quiet" type="submit">Skip</button>
-      </form>
-    </div>
+    <form method="post" action="/slot">
+      <input type="hidden" name="plan_id" value="{{ p.id }}"><input type="hidden" name="slot" value="{{ slot.key }}">
+      <input type="hidden" name="back" value="{{ back_url }}"><input type="hidden" name="status" value="taken">
+      {%- set cls = 'btn-primary' if urgent else 'btn-secondary' %}
+      {%- if slot.kind == "clinic" %}
+      {#- Clinic doses ask when too. Chemo's time starts the 24 hours before a white-cell booster is allowed. #}
+      {{ take_panel("Given", cls, "When was it given?", [("when", "now", "Just now")] if is_today else [],
+                    {"id": "at-" ~ p.id ~ "-" ~ (slot.key | replace(" ", "-") | replace(":", "")), "field": "at_time", "name": "when", "value": "at",
+                     "default": now.strftime("%H:%M") if is_today else ""}) }}
+      {%- elif not is_today and not slot.time %}
+      <button class="btn {{ cls }} btn-take" type="submit">{{ icon("check") }}Taken</button>
+      {%- else %}
+      {#- Exact times only. On a past day "Just now" would be wrong, so only Other time shows, set to the planned time to check. #}
+      {{ take_panel("Taken", cls, "When was it taken?", [("when", "now", "Just now")] if is_today else [],
+                    {"id": "at-" ~ p.id ~ "-" ~ (slot.key | replace(" ", "-") | replace(":", "")), "field": "at_time", "name": "when", "value": "at",
+                     "default": now.strftime("%H:%M") if is_today else (slot.time or "")}) }}
+      {%- endif %}
+    </form>
+    <form method="post" action="/slot">
+      <input type="hidden" name="plan_id" value="{{ p.id }}"><input type="hidden" name="slot" value="{{ slot.key }}">
+      <input type="hidden" name="back" value="{{ back_url }}"><input type="hidden" name="status" value="skipped">
+      <button class="btn btn-quiet btn-sm" type="submit">Skip</button>
+    </form>
     {%- endif %}
   </div>
 </div>
 {%- endmacro %}
 
+{% macro feelings_card(quick, feelings, fever_f, people, temp_unit) -%}
+{% from "_ui.html" import symptom_tag %}
+<section class="card feel" aria-labelledby="feel-h">
+  <div class="spread">
+    <h2 id="feel-h">How are you feeling?</h2>
+    <a class="btn btn-quiet btn-sm head-link" href="/symptoms">History</a>
+  </div>
+  <div class="feel-grid">
+    {% for s in quick %}
+    <a class="chip-btn {{ 'extra' if loop.index > 5 }} {{ 'urgent' if s.urgent }}" href="/symptoms/new?s={{ s.key }}"><span class="chip-ico">{{ icon(s.icon) }}</span><span>{{ s.name }}</span></a>
+    {% endfor %}
+    <a class="chip-btn" href="/symptoms#all"><span class="chip-ico">{{ icon("plus") }}</span><span>More</span></a>
+  </div>
+  {% if feelings %}
+  <div class="feel-recent" aria-label="Logged today">
+    {% for f in feelings[:6] %}{{ symptom_tag(f, fever_f, people, temp_unit) }}{% endfor %}
+  </div>
+  {% endif %}
+</section>
+{%- endmacro %}
+
 {% block title %}Today · ChemoTracker{% endblock %}
 {% block content %}
-{% from "_ui.html" import period_icon, ring_svg, ring_legend, countdown, call_card, symptom_tag, med_info %}
+{% from "_ui.html" import period_icon, ring_svg, ring_legend, lid_strip, prn_row, call_card, symptom_tag %}
 {% set back_url = "/" if day == today else "/?d=" ~ day.isoformat() %}
+{% set logged = (flash.logged if flash and flash.logged else []) %}
+{% set is_today = day == today %}
 <div class="page">
-  <div class="page-head">
-    <div>
-      <div class="eyebrow-row">
-        <div class="eyebrow">{{ fmt_rel(day, today) }} · {{ fmt_day(day) }}</div>
-        <nav class="daynav" aria-label="Change day">
-          <a href="/?d={{ (day - timedelta(days=1)).isoformat() }}" aria-label="Previous day">{{ icon("chevron-left") }}</a>
-          {% if day != today %}<a class="label" href="/">Today</a>{% endif %}
-          <a href="/?d={{ (day + timedelta(days=1)).isoformat() }}" aria-label="Next day">{{ icon("chevron-right") }}</a>
-        </nav>
-      </div>
+  <header class="today-head">
+    {% if plan.cycle %}
+    {%- set full = ring | selectattr("mark", "equalto", "done") | list | length %}
+    <a class="today-dial" href="/cycles/{{ plan.cycle.id }}" aria-label="Cycle {{ plan.cycle.number }}, day {{ plan.day }} of {{ plan.cycle.length_days }}. {{ full }} {{ 'day' if full == 1 else 'days' }} with every dose logged. Open the cycle">{{ ring_svg(ring, span, plan.cycle, 96, compact=True) }}</a>
+    {% endif %}
+    <div class="today-title">
       {% if plan.cycle %}
-      <h1>Cycle {{ plan.cycle.number }} · Day {{ plan.day }}<span class="muted" style="font-weight:400"> of {{ plan.cycle.length_days }}</span></h1>
-      {% set done, total = plan.counts() %}
+      <h1>Day {{ plan.day }}<span class="of"> of {{ plan.cycle.length_days }}</span></h1>
+      <p class="sub">{% if (day - today).days | abs <= 1 %}{{ fmt_rel(day, today) }} · {% endif %}<span class="nowrap">{{ fmt_day(day) }}</span> · <span class="nowrap">Cycle {{ plan.cycle.number }}</span>{% if plan.day == 1 %} · Chemo day{% elif plan.day == 0 %} · Day before chemo{% elif plan.day > plan.cycle.length_days %} · After the planned cycle{% endif %}</p>
       {% if plan.day in (0, 1) %}<a class="moved-link" href="/cycles/{{ plan.cycle.id }}?change=1#change">Chemo moved to another day?</a>{% endif %}
-      <p class="sub">{% if plan.day == 1 %}Chemo day{% elif plan.day == 0 %}Day before chemo{% elif plan.day > plan.cycle.length_days %}After the planned cycle{% endif %}{% if plan.day in (0, 1) or plan.day > plan.cycle.length_days %}{% if total %} · {% endif %}{% endif %}{% if total %}{{ done }} of {{ total }} planned doses logged{% elif plan.day not in (0, 1) %}No planned doses{% endif %}{% if plan.cycle.regimen %} · {{ plan.cycle.regimen }}{% endif %}</p>
       {% else %}
-      <h1>Today</h1>
+      <h1>{{ fmt_rel(day, today) }}</h1>
+      <p class="sub">{{ fmt_day(day) }}</p>
       {% endif %}
     </div>
-  </div>
+    <nav class="daynav" aria-label="Change day">
+      <a href="/?d={{ (day - timedelta(days=1)).isoformat() }}" aria-label="Previous day">{{ icon("chevron-left") }}</a>
+      {% if not is_today %}<a class="label" href="/">Today</a>{% endif %}
+      <a href="/?d={{ (day + timedelta(days=1)).isoformat() }}" aria-label="Next day">{{ icon("chevron-right") }}</a>
+    </nav>
+  </header>
 
   <div class="today">
     <div class="today-main">
       {% if not people %}
-      <a class="card callout" href="/people" style="text-decoration: none">
+      <a class="card callout" href="/people">
         {{ icon("users") }}
         <div class="grow"><h3>Add who's using ChemoTracker</h3><p class="meta">Then every dose and symptom shows who logged it.</p></div>
         {{ icon("chevron-right", "muted") }}
       </a>
       {% endif %}
+
       {% if plan.cycle %}
-      <a class="card cycle-strip only-mobile ring-link" href="/cycles/{{ plan.cycle.id }}">
-        {{ ring_svg(ring, span, plan.cycle, 200, compact=True) }}
-        <div class="grow">
-          {% if next_doses %}
-          {% set n = next_doses[0] %}
-          <div class="meta">Next dose</div>
-          <div class="dose-name" style="font-size: var(--fs-base)">{{ n.plan.med_name }}</div>
-          <div class="sub">{{ fmt_rel(n.date, today) }} at {{ fmt_time(n.time) }}</div>
-          {% else %}
-          <div class="meta">No more scheduled doses this cycle</div>
-          {% endif %}
-        </div>
-        {{ icon("chevron-right", "muted") }}
-      </a>
+        {% if plan.compartments or plan.clinic %}{{ lid_strip(plan, now) }}{% endif %}
       {% elif upcoming %}
       <div class="card empty">
         <h2>Cycle {{ upcoming.number }} starts {{ fmt_rel(upcoming_day1, today) | lower if (upcoming_day1 - today).days < 2 else "on " ~ fmt_day(upcoming_day1) }}</h2>
@@ -108,112 +169,73 @@
       </div>
       {% endif %}
 
-      {% for f in follow_ups %}
-      <form class="card follow" method="post" action="/dose/{{ f.id }}/follow">
-        <input type="hidden" name="back" value="{{ back_url }}">
-        <div class="q">How did the {{ f.med_name }} at {{ fmt_time(f.taken_at) }} go?</div>
-        {% if f.logged_by and people.get(f.logged_by) %}<div class="meta">Logged by {{ people[f.logged_by].name }}</div>{% endif %}
-        <div class="stack-sm" style="margin-top: var(--s3)">
-          <div class="meta">Did it help?</div>
-          <div class="segmented" role="radiogroup">
-            {% for k, v in helped_names.items() %}<label><input type="radio" name="helped" value="{{ k }}" required>{{ v }}</label>{% endfor %}
-          </div>
-          <div class="meta">How was the dose?</div>
-          <div class="segmented" role="radiogroup">
-            {% for k, v in feel_names.items() %}<label><input type="radio" name="dose_feel" value="{{ k }}">{{ v }}</label>{% endfor %}
-          </div>
-        </div>
-        <div class="row" style="margin-top: var(--s3)">
-          <button class="btn btn-primary" type="submit">Save</button>
-          <a class="btn btn-quiet" href="/dose/{{ f.id }}">Add side effects or notes</a>
-        </div>
-      </form>
-      {% endfor %}
-
-      {% if day == today %}
-      <section class="card feel" aria-labelledby="feel-h">
-        <div class="spread">
-          <h2 id="feel-h">How are you feeling?</h2>
-          <a class="btn btn-quiet btn-sm head-link" href="/symptoms">History</a>
-        </div>
-        <div class="feel-grid">
-          {% for s in quick %}
-          <a class="chip-btn {{ 'extra' if loop.index > 5 }} {{ 'urgent' if s.urgent }}" href="/symptoms/new?s={{ s.key }}"><span class="chip-ico">{{ icon(s.icon) }}</span><span>{{ s.name }}</span></a>
-          {% endfor %}
-          <a class="chip-btn" href="/symptoms#all"><span class="chip-ico">{{ icon("plus") }}</span><span>More</span></a>
-        </div>
-        {% if feelings %}
-        <div class="feel-recent" aria-label="Logged today">
-          {% for f in feelings[:6] %}{{ symptom_tag(f, fever_f, people, temp_unit) }}{% endfor %}
-        </div>
+      {% set ns = namespace(feel=False, ask=False) %}{% set ask_open = request.query_params.get("ask") %}
+      {% for kind, c in ([("comp", overnight)] if overnight else []) + plan.sections(now) %}
+        {% if is_today and not ns.feel and kind == "comp" and c.state(now) not in ("due", "late") %}
+          {{ feelings_card(quick, feelings, fever_f, people, temp_unit) }}{% set ns.feel = True %}
         {% endif %}
-      </section>
-      {% elif feelings %}
+        {% if kind == "prn" %}
+        <details class="compartment shelf" data-period="prn" id="c-prn" open>
+          <summary>{{ period_icon("prn") }}<span class="c-title"><span class="c-name">As needed</span><span class="c-meds">Take only when you need one</span></span>{{ icon("chevron-down", "chev") }}</summary>
+          <div class="c-body">
+            {% for an in (plan.as_needed_by_readiness(now) if is_today else plan.as_needed) %}
+            {% if day > today %}
+            <div class="prn-row future">
+              <div class="prn-info">
+                <div class="dose-name"><a href="/medicines/{{ an.medication_id }}">{{ an.name }}</a></div>
+                <div class="dose-detail">Allowed this day. Log it on the day you take it.</div>
+              </div>
+            </div>
+            {% else %}
+            {{ prn_row(an, now, today, people, back_url, logged=logged) }}
+            {% endif %}
+            {% endfor %}
+            {% if day <= today %}<a class="btn btn-quiet btn-sm shelf-more" href="/dose/new">{{ icon("clock") }}Took one earlier? Log it with the time</a>{% endif %}
+          </div>
+        </details>
+        {% if follow_ups %}{{ ask_section(follow_ups, people, back_url, ask_open) }}{% set ns.ask = True %}{% endif %}
+        {% else %}
+        {% set st = c.state(now) %}
+        {% set names = c.slots | map(attribute="plan") | map(attribute="med_name") | unique | list %}
+        <details class="compartment {{ st }}" data-period="{{ c.key }}" id="c-{{ c.key }}" {% if st in ("due", "late") or (not is_today and st != "done") %}open{% endif %}>
+          <summary>
+            {{ period_icon(c.key) }}
+            <span class="c-title"><span class="c-name">{{ c.name }}</span><span class="c-meds">{{ names[:2] | join(", ") }}{% if names | length > 2 %} +{{ names | length - 2 }}{% endif %}</span></span>
+            <span class="c-state">{% if st == "done" %}{{ icon("check") }}{% endif %}{{ c.lid_text(now) }}</span>
+            {{ icon("chevron-down", "chev") }}
+          </summary>
+          <div class="c-body">
+            {%- for s in c.slots %}{{ dose_row(s, now, back_url, people, is_today, logged) }}{% endfor %}
+            {%- set open_now = c.open_now(now) %}
+            {%- if open_now | length > 1 %}
+            {#- Pills in one compartment are often taken together: one answer for all of them. #}
+            <form class="take-all" method="post" action="/slots/taken">
+              {% for s in open_now %}<input type="hidden" name="slots[]" value="{{ s.plan.id }}|{{ s.key }}">{% endfor %}
+              <input type="hidden" name="back" value="{{ back_url }}">
+              {{ take_panel("Took both" if open_now | length == 2 else "Took all " ~ (open_now | length), "btn-secondary", "When were they taken?",
+                            [("when", "now", "Just now")] if is_today else [],
+                            {"id": "at-all-" ~ c.key, "field": "at_time", "name": "when", "value": "at",
+                             "default": now.strftime("%H:%M") if is_today else (open_now[0].time or "")}) }}
+            </form>
+            {%- endif %}
+          </div>
+        </details>
+        {% endif %}
+      {% endfor %}
+      {% if follow_ups and not ns.ask %}{{ ask_section(follow_ups, people, back_url, ask_open) }}{% endif %}
+      {% if is_today and not ns.feel %}{{ feelings_card(quick, feelings, fever_f, people, temp_unit) }}{% endif %}
+
+      {% if not is_today and feelings %}
       <section class="card feel">
         <h2>Symptoms this day</h2>
         <div class="feel-recent">{% for f in feelings %}{{ symptom_tag(f, fever_f, people, temp_unit) }}{% endfor %}</div>
       </section>
       {% endif %}
 
-      {% if plan.clinic %}
-      <details class="compartment" data-period="clinic" {% if not (plan.clinic | selectattr("log") | list | length == plan.clinic | length) %}open{% endif %}>
-        <summary>{{ period_icon("clinic") }}<span class="c-name">At the clinic</span><span class="c-meta">· {{ plan.clinic | length }} {{ "medicine" if plan.clinic | length == 1 else "medicines" }}</span>{{ icon("chevron-down", "chev") }}</summary>
-        <div class="c-body">{% for s in plan.clinic %}{{ dose_row(s, now, back_url, people) }}{% endfor %}</div>
-      </details>
-      {% endif %}
-
-      {% for c in plan.compartments %}
-      {% set n_done = c.slots | selectattr("log") | list | length %}
-      <details class="compartment" data-period="{{ c.key }}" {% if not c.all_done() %}open{% endif %}>
-        <summary>
-          {{ period_icon(c.key) }}<span class="c-name">{{ c.name }}</span>
-          <span class="c-meta">· {% if c.all_done() %}all logged{% else %}{{ n_done }} of {{ c.slots | length }} logged{% endif %}</span>
-          {{ icon("chevron-down", "chev") }}
-        </summary>
-        <div class="c-body">{% for s in c.slots %}{{ dose_row(s, now, back_url, people) }}{% endfor %}</div>
-      </details>
-      {% endfor %}
-
-      {% if plan.as_needed %}
-      <details class="compartment" data-period="prn" open>
-        <summary>{{ period_icon("prn") }}<span class="c-name">As needed</span><span class="c-meta">· {{ plan.as_needed | length }} {{ "medicine" if plan.as_needed | length == 1 else "medicines" }}</span>{{ icon("chevron-down", "chev") }}</summary>
-        <div class="c-body">
-          {% for an in plan.as_needed %}
-          {% set ok = an.available(now) %}
-          <div class="prn-row">
-            <div>
-              <div class="dose-name"><a href="/medicines/{{ an.medication_id }}">{{ an.name }}</a>{% if an.brand %} <span class="meta">({{ an.brand }})</span>{% endif %}</div>
-              <div class="dose-detail">{{ [an.strength, an.dose] | select | join(" · ") }}{% if an.gap_hours %}{{ " · " if an.strength or an.dose }}every {{ an.gap_hours | round(1) | string | replace(".0", "") }} hr{% endif %}{% if an.max_per_day %} · up to {{ an.max_per_day }} a day{% endif %}</div>
-              {% if an.last_at %}<div class="dose-detail">Last taken {{ fmt_rel(an.last_at.date(), today) | lower }} {{ fmt_time(an.last_at) }}{% if an.last.logged_by and people.get(an.last.logged_by) %} by {{ people[an.last.logged_by].name }}{% endif %}{% if an.count_today %} · {{ an.count_today }} today{% endif %}</div>{% endif %}
-              {% if not an.gap_hours %}<div class="dose-detail"><a href="/medicines/{{ an.medication_id }}">Add the hours between doses from the label</a></div>{% endif %}
-            </div>
-            {% if day > today %}
-            <div class="prn-when"><div class="txt"><strong>Allowed this day</strong><span>Log it on the day you take it</span></div></div>
-            {% else %}
-            <div class="prn-when {{ 'ok' if ok }}">
-              {{ countdown(an, now) }}
-              <div class="txt"><strong data-status>{{ an.status_text(now) }}</strong><span data-wait>{{ an.wait_text(now) }}</span></div>
-            </div>
-            <div class="prn-actions">
-              <form method="post" action="/dose/quick">
-                <input type="hidden" name="medication_id" value="{{ an.medication_id }}">
-                <input type="hidden" name="plan_id" value="{{ an.plan.id if an.plan else '' }}">
-                <input type="hidden" name="back" value="{{ back_url }}">
-                <button class="btn {{ 'btn-primary' if ok else 'btn-secondary' }}" type="submit" data-prn-button>{{ icon("check") }}Took one now</button>
-              </form>
-              <a class="btn btn-quiet" href="/dose/new?med={{ an.medication_id }}">Other time</a>
-            </div>
-            {% endif %}
-          </div>
-          {% endfor %}
-        </div>
-      </details>
-      {% endif %}
-
       {% if other_prn %}
-      <details class="card more" style="padding: 0 var(--s5)">
+      <details class="card more">
         <summary>Other as-needed medicines ({{ other_prn | length }})</summary>
-        <ul class="list" style="margin: 0 calc(var(--s5) * -1)">
+        <ul class="list">
           {% for m in other_prn %}
           <li><a class="list-item" href="/dose/new?med={{ m.id }}"><span class="grow"><span class="title">{{ m.name }}</span> <span class="meta">{{ m.strength or "" }}</span><br><span class="meta">Not on today's schedule. Log a dose</span></span>{{ icon("chevron-right", "chev") }}</a></li>
           {% endfor %}
@@ -224,42 +246,19 @@
       {% if plan.cycle and not plan.compartments and not plan.clinic and not plan.as_needed %}
       <div class="card empty">
         <h2>Nothing scheduled</h2>
-        <p>No medicines are planned for {{ "today" if day == today else "this day" }}.</p>
+        <p>No medicines are planned for {{ "today" if is_today else "this day" }}.</p>
       </div>
       {% endif %}
     </div>
 
     <aside class="today-aside">
       {% if plan.cycle %}
-      <a class="card card-pad only-desktop ring-link" href="/cycles/{{ plan.cycle.id }}">
-        <div class="spread"><h3>Cycle {{ plan.cycle.number }}{% if plan.cycle.regimen %} <span class="meta">· {{ plan.cycle.regimen }}</span>{% endif %}</h3>{{ icon("chevron-right", "muted") }}</div>
+      <a class="card card-pad only-desktop dial-card" href="/cycles/{{ plan.cycle.id }}">
+        <div class="spread"><h2>Cycle {{ plan.cycle.number }}{% if plan.cycle.regimen %} <span class="meta">· {{ plan.cycle.regimen }}</span>{% endif %}</h2>{{ icon("chevron-right", "muted") }}</div>
         {{ ring_svg(ring, span, plan.cycle, 240) }}
         {{ ring_legend() }}
       </a>
       {% endif %}
-
-      {% if next_doses %}
-      <div class="card only-desktop">
-        <div class="card-head"><h3>Next up</h3></div>
-        <ul class="list" style="margin-top: var(--s2)">
-          {% for n in next_doses %}
-          <li class="list-item" style="min-height: 56px; padding-top: var(--s2); padding-bottom: var(--s2)">
-            <span class="time" style="min-width: 5.5rem; color: var(--ink); font-weight: 700">{{ fmt_time(n.time) }}</span>
-            <span class="grow"><span class="title">{{ n.plan.med_name }}</span><br><span class="meta">{{ fmt_rel(n.date, today) }}{% if n.dose %} · {{ n.dose }}{% endif %}</span></span>
-          </li>
-          {% endfor %}
-        </ul>
-      </div>
-      {% endif %}
-
-      {% if focus %}
-      {% set fp, finfo = focus %}
-      <div class="card card-pad only-desktop">
-        <div class="spread"><h3>About {{ finfo.generic }}</h3><a class="btn btn-quiet btn-sm head-link" href="/medicines/{{ fp.medication_id }}">More</a></div>
-        {{ med_info(finfo, compact=True) }}
-      </div>
-      {% endif %}
-
       {{ call_card(prefs) }}
     </aside>
   </div>

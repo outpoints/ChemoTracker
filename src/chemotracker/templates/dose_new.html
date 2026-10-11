@@ -1,28 +1,77 @@
 {% extends "base.html" %}
-{% block title %}Log {{ med.name }} · ChemoTracker{% endblock %}
+{% block title %}Log a dose · ChemoTracker{% endblock %}
 {% block content %}
 {% from "_ui.html" import icon %}
+{#- One screen: which medicine, when, how much. Grouped like the Medicines page.
+    A clinic medicine on a day it isn't given asks first (pop-up with scripts, a check page without). -#}
+{% set v = values or {} %}
+{% set chosen = (v.get("medication_id") or "") | string %}
+{% set picked = facts.get(chosen | int) if chosen.isdigit() else None %}
+{% set ago = (v.get("ago") or "0") | string %}
 <div class="page page-narrow">
-  <a class="btn btn-quiet" href="/" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Today</a>
-  <div class="page-head" style="margin-top: var(--s2)">
-    <div>
-      <div class="eyebrow">Log a dose</div>
-      <h1>{{ med.name }}{% if med.strength %} <span class="muted" style="font-weight: 400">{{ med.strength }}</span>{% endif %}</h1>
-      {% if med.directions %}<p class="sub">Label: {{ med.directions }}</p>{% endif %}
-    </div>
-  </div>
+  <a class="btn btn-quiet back-link" href="{{ back_url }}">{{ icon("arrow-left") }}{{ "Today" if back_url == "/" else "Back" }}</a>
+  <div class="page-head"><div><h1>Log a dose</h1></div></div>
   <form class="form card card-pad" method="post" action="/dose/new">
     {% if error %}<div class="error-box" role="alert">{{ error }}</div>{% endif %}
-    <input type="hidden" name="medication_id" value="{{ med.id }}">
-    <div class="field-row">
-      <div class="field"><label for="taken_at">When did you take it?</label><input id="taken_at" name="taken_at" type="datetime-local" value="{{ values.taken_at }}" required></div>
-      <div class="field"><label for="dose">Dose</label><input id="dose" name="dose" type="text" value="{{ values.dose }}" placeholder="For example: 1 tablet"></div>
-    </div>
+    <input type="hidden" name="back" value="{{ back_url }}">
+    <input type="hidden" name="clinic_ok" value="" data-clinic-ok>
+
     <div class="field">
-      <label for="reason">Taken for <span class="meta">(optional)</span></label>
-      <input id="reason" name="reason" type="text" value="{{ values.reason or reason }}" placeholder="For example: nausea">
+      <label for="medication_id">Medicine</label>
+      <select id="medication_id" name="medication_id" required data-med-select>
+        <option value="" {% if not picked %}selected{% endif %} disabled>Pick a medicine</option>
+        {%- for key, name, blurb, group in home_groups %}
+        <optgroup label="{{ name }}">
+          {%- for m in group %}{% set f = facts[m.id] %}
+          <option value="{{ m.id }}" {% if chosen == m.id | string %}selected{% endif %} data-dose="{{ f.dose }}" data-directions="{{ f.directions }}" data-status="{{ f.status }}">{{ m.name }}{% if m.strength %} · {{ m.strength }}{% endif %}</option>
+          {%- endfor %}
+        </optgroup>
+        {%- endfor %}
+        {%- if clinic %}
+        <optgroup label="At the clinic">
+          {%- for m in clinic %}{% set f = facts[m.id] %}
+          <option value="{{ m.id }}" {% if chosen == m.id | string %}selected{% endif %} data-dose="{{ f.dose }}" data-directions="{{ f.directions }}" data-status="" {% if f.clinic_note %}data-clinic-note="{{ f.clinic_note }}"{% endif %}>{{ m.name }}</option>
+          {%- endfor %}
+        </optgroup>
+        {%- endif %}
+      </select>
+      {%- set line = ([("Label: " ~ picked.directions) if picked.directions, picked.status] | select | join(". ")) if picked else "" %}
+      <p class="hint" data-med-facts {% if not line %}hidden{% endif %}>{{ line }}</p>
     </div>
-    <button class="btn btn-primary btn-lg btn-block" type="submit">{{ icon("check") }}Save dose</button>
+
+    <fieldset class="when">
+      <legend>When was it taken?</legend>
+      <div class="when-chips">
+        {#- Exact times only. A guess like "30 min ago" moves when the next as-needed dose is OK. #}
+        {%- for value, label in [("0", "Just now"), ("pick", "Other time")] %}
+        <label><input type="radio" name="ago" value="{{ value }}" {% if ago == value %}checked{% endif %}><span>{{ label }}</span></label>
+        {%- endfor %}
+      </div>
+      <div class="when-time">
+        <label for="pick_time">Time</label>
+        <input id="pick_time" name="pick_time" type="time" value="{{ v.get('pick_time') or now.strftime('%H:%M') }}">
+        <p class="hint">A time later than now counts as last night.</p>
+      </div>
+    </fieldset>
+
+    <div class="field-row">
+      <div class="field"><label for="dose">Dose</label><input id="dose" name="dose" type="text" value="{{ v.get('dose') or (picked.dose if picked else '') }}" placeholder="For example: 1 tablet" data-dose-input></div>
+      <div class="field"><label for="reason">Taken for <span class="meta">(optional)</span></label><input id="reason" name="reason" type="text" value="{{ v.get('reason_text') or v.get('reason') or '' }}" placeholder="For example: nausea"></div>
+    </div>
+    <button class="btn btn-primary btn-lg btn-block" type="submit">{{ icon("check") }}Log dose</button>
   </form>
 </div>
+{% if facts.values() | selectattr("clinic_note") | list %}
+<dialog class="ask" id="clinic-sheet" aria-labelledby="clinic-sheet-h" aria-describedby="clinic-sheet-p">
+  <form method="dialog" class="ask-body">
+    <span class="ask-ico">{{ icon("hospital") }}</span>
+    <h2 id="clinic-sheet-h" tabindex="-1" autofocus>Given at the clinic</h2>
+    <p id="clinic-sheet-p" data-sheet-text></p>
+    <div class="ask-actions">
+      <button class="btn btn-primary btn-lg" value="back">Pick another medicine</button>
+      <button class="btn btn-quiet btn-lg" value="go">Log it anyway</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
 {% endblock %}

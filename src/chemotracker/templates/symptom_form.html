@@ -5,12 +5,12 @@
 {% from "_ui.html" import icon %}
 {% set v = values or {} %}
 {% set val = v.get("value") %}{% set sev = v.get("severity") %}{% set notes = v.get("notes") or "" %}
-<div class="page page-narrow">
-  <a class="btn btn-quiet" href="{{ '/symptoms' if entry else '/' }}" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Back</a>
-  <div class="page-head" style="margin-top: var(--s2)">
+<div class="page page-narrow stack">
+  <a class="btn btn-quiet back-link" href="{{ '/symptoms' if entry else '/' }}">{{ icon("arrow-left") }}Back</a>
+  <div class="page-head">
     <div>
-      <div class="eyebrow">{{ "Edit entry" if entry else sym.name }}</div>
       <h1>{{ sym.question }}</h1>
+      {% if entry %}<p class="sub">Changing an entry you already logged</p>{% endif %}
     </div>
   </div>
 
@@ -83,14 +83,14 @@
       </div>
     </details>
 
-    <button class="btn btn-primary btn-lg btn-block" type="submit">{{ icon("check") }}Save</button>
+    <button class="btn btn-primary btn-lg btn-block sticky-save" type="submit">{{ icon("check") }}Save</button>
   </form>
 
-  {% if entry and events %}<div style="margin-top: var(--s4)">{{ history_card(events) }}</div>{% endif %}
+  {% if entry and events %}<div>{{ history_card(events) }}</div>{% endif %}
   {% if entry %}
-  <form method="post" action="/symptoms/{{ entry.id }}/delete" data-confirm="Delete this entry?" style="margin-top: var(--s4)">
+  <form method="post" action="/symptoms/{{ entry.id }}/delete" data-confirm="Delete this entry?">
     <input type="hidden" name="back" value="/symptoms?d={{ entry.logged_at[:10] }}">
-    <button class="btn btn-danger btn-block" type="submit">{{ icon("trash") }}Delete entry</button>
+    <button class="btn btn-danger btn-quieter" type="submit">{{ icon("trash") }}Delete this entry</button>
   </form>
   {% endif %}
 </div>

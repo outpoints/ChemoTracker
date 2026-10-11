@@ -5,81 +5,124 @@
 {% set taken = doses | selectattr("status", "equalto", "Taken") | list %}
 {% set missing = doses | selectattr("status", "equalto", "Not logged") | list %}
 {% set skipped = doses | selectattr("status", "equalto", "Skipped") | list %}
-<div class="page page-narrow">
+{% set too_strong = taken | selectattr("dose_feel", "equalto", "Too strong") | list | length %}
+{% set not_enough = taken | selectattr("dose_feel", "equalto", "Not enough") | list | length %}
+{% set dose_rows = doses | reverse | list %}
+{% set sym_rows = syms | reverse | list %}
+{% set limit = 40 %}
+<div class="page">
   <div class="page-head">
     <div>
       <h1>Report for your care team</h1>
-      <p class="sub">An Excel file with a summary, a day-by-day view, every dose, every symptom (with who logged it), and a cycle sheet like the clinic's.</p>
+      <p class="sub">An Excel file to email, print, or show at the next appointment.</p>
     </div>
   </div>
 
-  <form class="card card-pad form" method="get" action="/report">
-    <div class="field-row">
-      <div class="field">
-        <label for="cycle">Cycle</label>
-        <select id="cycle" name="cycle" data-autosubmit>
-          <option value="">Pick dates instead</option>
-          {% for c in cycles | reverse %}<option value="{{ c.id }}" {% if cycle and cycle.id == c.id %}selected{% endif %}>Cycle {{ c.number }} · Day 1 {{ fmt_day(parse_local(c.day1 ~ " 00:00").date()) }}</option>{% endfor %}
-        </select>
+  <div class="report-grid">
+    <section class="card report-get" aria-labelledby="range-h">
+      <div>
+        <h2 id="range-h" class="range-text">
+          {%- if cycle %}Cycle {{ cycle.number }}{% if end == today %} so far{% endif %}<span class="range-dates">{{ fmt_day(start) }} to {{ "today" if end == today else fmt_day(end) }}</span>
+          {%- else %}{{ fmt_day(start) }} to {{ "today" if end == today else fmt_day(end) }}{% endif -%}
+        </h2>
       </div>
-      <div class="field-row" style="gap: var(--s3)">
-        <div class="field"><label for="start">From</label><input id="start" name="start" type="date" value="{{ start.isoformat() }}"></div>
-        <div class="field"><label for="end">To</label><input id="end" name="end" type="date" value="{{ end.isoformat() }}"></div>
+      <nav class="seg-links" aria-label="Report period">
+        {% if this_cycle %}<a href="/report?cycle={{ this_cycle.id }}" {% if period == "this-cycle" %}aria-current="true"{% endif %}>This cycle</a>{% endif %}
+        <a href="/report?{{ quick['last-7'] }}" {% if period == "last-7" %}aria-current="true"{% endif %}>Past week</a>
+        <a href="/report?{{ quick['last-30'] }}" {% if period == "last-30" %}aria-current="true"{% endif %}>Past month</a>
+      </nav>
+      <a class="btn btn-primary btn-lg btn-block" href="/report.xlsx?{{ query }}">{{ icon("download") }}Download Excel report</a>
+      <div class="csv-links">
+        <a class="btn btn-quiet btn-sm" href="/report-doses.csv?{{ query }}">Doses as CSV</a>
+        <a class="btn btn-quiet btn-sm" href="/report-symptoms.csv?{{ query }}">Symptoms as CSV</a>
       </div>
-    </div>
-    <button class="btn btn-secondary" type="submit">Update</button>
-  </form>
-
-  <div class="card card-pad" style="margin-top: var(--s4)">
-    <div class="meta">{{ fmt_day(start) }} to {{ fmt_day(end) }}</div>
-    <dl class="kv" style="margin-top: var(--s3)">
-      <dt>Doses taken</dt><dd>{{ taken | length }}</dd>
-      <dt>Skipped</dt><dd>{{ skipped | length }}</dd>
-      <dt>Planned but not logged</dt><dd>{{ missing | length }}</dd>
-      <dt>Symptom entries</dt><dd>{{ syms | length }}</dd>
-      <dt>Dose felt too strong / not enough</dt><dd>{{ taken | selectattr("dose_feel", "equalto", "Too strong") | list | length }} / {{ taken | selectattr("dose_feel", "equalto", "Not enough") | list | length }}</dd>
-    </dl>
-    <div class="row-wrap" style="margin-top: var(--s5)">
-      <a class="btn btn-primary btn-lg" href="/report.xlsx?{{ query }}">{{ icon("download") }}Download Excel report</a>
-      <a class="btn btn-secondary" href="/report-doses.csv?{{ query }}">Doses (CSV)</a>
-      <a class="btn btn-secondary" href="/report-symptoms.csv?{{ query }}">Symptoms (CSV)</a>
-    </div>
-    <p class="hint" style="margin-top: var(--s3)">Email it, print it, or bring it on a phone to the next appointment. CSV files open in any spreadsheet app.</p>
-  </div>
-
-  <div class="section-title"><h2>Doses</h2><span class="meta">Newest first</span></div>
-  <div class="card">
-    {% if doses %}
-    <ul class="timeline">
-      {% for r in doses | reverse %}{% if loop.index <= 40 %}
-      <li>
-        <span class="t">{{ r.when.strftime("%b %d") if r.when else "" }}</span>
-        <span class="dot {{ 'is-miss' if r.status == 'Not logged' else ('is-skip' if r.status == 'Skipped' else 'is-dose') }}"></span>
-        <div>
-          <div class="what">{{ r.medicine }} <span class="meta">{{ r.status }}{% if r.status == "Taken" %} {{ fmt_time(r.when) }}{% elif r.planned %} · planned {{ fmt_time(r.planned) }}{% endif %}{% if r.by %} · {{ r.by }}{% endif %}</span></div>
-          {% if r.helped or r.dose_feel or r.side_effects %}<div class="note">{{ [("Helped: " ~ r.helped) if r.helped, ("Dose " ~ r.dose_feel | lower) if r.dose_feel, r.side_effects] | select | join(" · ") }}</div>{% endif %}
+      <details class="more range-more" {% if period in ("other-cycle", "dates") %}open{% endif %}>
+        <summary>Another cycle or your own dates</summary>
+        <div class="stack">
+          {% if cycles %}
+          <form class="range-form" method="get" action="/report">
+            <label class="label" for="cycle">A cycle</label>
+            <div class="inline-pick">
+              <select id="cycle" name="cycle">
+                {% for c in cycles | reverse %}<option value="{{ c.id }}" {% if cycle and cycle.id == c.id %}selected{% endif %}>Cycle {{ c.number }}, from {{ fmt_day(parse_local(c.day1 ~ " 00:00").date()) }}</option>{% endfor %}
+              </select>
+              <button class="btn btn-secondary" type="submit">Show</button>
+            </div>
+          </form>
+          {% endif %}
+          <form class="range-form" method="get" action="/report">
+            <fieldset>
+              <legend class="label">Your own dates</legend>
+              <div class="date-pair">
+                <div class="field"><label class="meta" for="start">From</label><input id="start" name="start" type="date" value="{{ start.isoformat() }}"></div>
+                <div class="field"><label class="meta" for="end">To</label><input id="end" name="end" type="date" value="{{ end.isoformat() }}"></div>
+              </div>
+            </fieldset>
+            <button class="btn btn-secondary" type="submit">Show these dates</button>
+          </form>
         </div>
-        <span></span>
-      </li>
-      {% endif %}{% endfor %}
-    </ul>
-    {% else %}<div class="empty"><p>No doses in this period.</p></div>{% endif %}
-  </div>
+      </details>
+    </section>
 
-  <div class="section-title"><h2>Symptoms</h2></div>
-  <div class="card">
-    {% if syms %}
-    <ul class="timeline">
-      {% for s in syms | reverse %}{% if loop.index <= 40 %}
-      <li>
-        <span class="t">{{ s.when.strftime("%b %d") }}</span>
-        <span class="dot s{{ s.score }}"></span>
-        <div><div class="what">{{ s.symptom }} <span class="meta">{{ s.reading or s.severity }} · {{ fmt_time(s.when) }}{% if s.by %} · {{ s.by }}{% endif %}</span></div>{% if s.notes %}<div class="note">{{ s.notes }}</div>{% endif %}</div>
-        <span></span>
-      </li>
-      {% endif %}{% endfor %}
-    </ul>
-    {% else %}<div class="empty"><p>No symptoms in this period.</p></div>{% endif %}
+    <section class="card card-pad report-tally" aria-labelledby="tally-h">
+      <h2 id="tally-h">In this period</h2>
+      <dl class="tally">
+        <div><dt>Doses taken</dt><dd>{{ taken | length }}</dd></div>
+        <div><dt>Doses skipped</dt><dd>{{ skipped | length }}</dd></div>
+        <div class="{{ 'is-gap' if missing }}"><dt>Planned doses with nothing logged</dt><dd>{{ missing | length }}</dd></div>
+        <div><dt>Symptom entries</dt><dd>{{ syms | length }}</dd></div>
+        {% if too_strong %}<div><dt>Dose felt too strong</dt><dd>{{ too_strong }}</dd></div>{% endif %}
+        {% if not_enough %}<div><dt>Dose felt not enough</dt><dd>{{ not_enough }}</dd></div>{% endif %}
+      </dl>
+    </section>
+
+    <section class="report-doses" aria-labelledby="doses-h">
+      <div class="section-title"><h2 id="doses-h">Doses</h2><span class="meta">Newest first</span></div>
+      <div class="card">
+        {% if dose_rows %}
+        <ul class="timeline">
+          {% for r in dose_rows[:limit] %}
+          {% if loop.changed(r.when.date()) %}<li class="day-head">{{ fmt_rel(r.when.date(), today) if (today - r.when.date()).days < 2 and (today - r.when.date()).days >= 0 else fmt_day(r.when.date()) }}</li>{% endif %}
+          <li>
+            <span class="t">{% if r.status == "Taken" or r.planned %}{{ fmt_time(r.when) }}{% endif %}</span>
+            <span class="dot {{ 'is-miss' if r.status == 'Not logged' else ('is-skip' if r.status == 'Skipped' else 'is-dose') }}"></span>
+            <div>
+              <div class="what">{{ r.medicine }}</div>
+              <div class="note">{{ "Nothing logged" if r.status == "Not logged" else r.status }}{% if r.by %} · {{ r.by }}{% endif %}</div>
+              {% if r.helped or r.dose_feel or r.side_effects %}<div class="note">{{ [("Helped: " ~ r.helped) if r.helped, ("Dose " ~ r.dose_feel | lower) if r.dose_feel, r.side_effects] | select | join(" · ") }}</div>{% endif %}
+            </div>
+            <span></span>
+          </li>
+          {% endfor %}
+        </ul>
+        {% if dose_rows | length > limit %}<p class="meta list-more">Showing the newest {{ limit }} of {{ dose_rows | length }}. The Excel file has all of them.</p>{% endif %}
+        {% else %}<div class="empty"><p>No doses in this period.</p></div>{% endif %}
+      </div>
+    </section>
+
+    <section class="report-syms" aria-labelledby="syms-h">
+      <div class="section-title"><h2 id="syms-h">Symptoms</h2><span class="meta">Newest first</span></div>
+      <div class="card">
+        {% if sym_rows %}
+        <ul class="timeline">
+          {% for s in sym_rows[:limit] %}
+          {% if loop.changed(s.when.date()) %}<li class="day-head">{{ fmt_rel(s.when.date(), today) if (today - s.when.date()).days < 2 and (today - s.when.date()).days >= 0 else fmt_day(s.when.date()) }}</li>{% endif %}
+          <li>
+            <span class="t">{{ fmt_time(s.when) }}</span>
+            <span class="dot s{{ s.score }}"></span>
+            <div>
+              <div class="what">{{ s.symptom }}</div>
+              <div class="note">{{ s.reading or s.severity }}{% if s.by %} · {{ s.by }}{% endif %}</div>
+              {% if s.notes %}<div class="note">{{ s.notes }}</div>{% endif %}
+            </div>
+            <span></span>
+          </li>
+          {% endfor %}
+        </ul>
+        {% if sym_rows | length > limit %}<p class="meta list-more">Showing the newest {{ limit }} of {{ sym_rows | length }}. The Excel file has all of them.</p>{% endif %}
+        {% else %}<div class="empty"><p>No symptoms in this period.</p></div>{% endif %}
+      </div>
+    </section>
   </div>
 </div>
 {% endblock %}

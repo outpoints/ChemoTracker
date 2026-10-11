@@ -345,10 +345,17 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 and m["id"] not in {a.medication_id for a in plan.as_needed}
             ]
             focus = _focus_med(plan, nxt)
+            # Until noon, an unlogged bedtime dose from last night stays on Today instead of vanishing at midnight.
+            overnight = None
+            if day == current.date() and current.hour < 12:
+                last = [s for s in schedule.day_plan(conn, day - timedelta(days=1), current).scheduled
+                        if s.log is None and s.period == "bedtime"]
+                if last:
+                    overnight = schedule.Compartment("lastnight", "From last night", last)
             span = schedule.cycle_span(conn, plan.cycle) if plan.cycle else 0
         return render(
             request, "today.html", active="today", plan=plan, ring=ring, upcoming=upcoming, next_doses=nxt,
-            follow_ups=follow, feelings=feelings, other_prn=other_prn, focus=focus, span=span, day=day,
+            follow_ups=follow, feelings=feelings, other_prn=other_prn, focus=focus, span=span, day=day, overnight=overnight,
             upcoming_day1=schedule.day1_of(upcoming) if upcoming else None,
             quick=[sx.BY_KEY[k] for k in sx.QUICK],
         )
@@ -370,9 +377,20 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 default_time = current
             elif slot.time:
                 default_time = slot.dt
-            else:  # clinic dose on another day: keep it on that day; the report shows no time for clinic doses
+            else:  # clinic dose on another day from a page that didn't ask when: keep it on that day
                 default_time = datetime.combine(slot.date, current.time())
-            taken_at = store.parse_local_dt(data.get("taken_at"), default_time)
+            # "When was it taken?" from the Taken panel: just now or another clock time.
+            choice = data.get("when")
+            if choice:
+                try:
+                    taken_at = _chosen_time(choice, slot, data.get("at_time"), current)
+                except ValueError:
+                    word = "given" if plan_row["kind"] == "clinic" else "taken"
+                    return go(back(data.get("back")), f"Pick the time it was {word}.", request)
+                if status == "taken" and taken_at > current + timedelta(minutes=5):
+                    return go(back(data.get("back")), "That time hasn't happened yet. Log it after it's taken.", request)
+            else:
+                taken_at = store.parse_local_dt(data.get("taken_at"), default_time)
             med = store.medication(conn, plan_row["medication_id"])
             # The button is only shown for doses nobody has recorded. If there's an entry now,
             # someone else recorded it after this page loaded: say so instead of overwriting it.
@@ -399,11 +417,56 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 log_id = store.log_slot(conn, plan_row, slot.key, status, taken_at, slot.dose or None, by=my_id)
         name = med["name"] if med else "Dose"
         msg = (
-            {"text": f"{name} marked taken at {schedule.fmt_time(taken_at)}.", "undo": log_id,
-             "follow": log_id if plan_row["kind"] != "clinic" else None}
+            {"text": f"{name} marked {'given' if plan_row['kind'] == 'clinic' else 'taken'} at {schedule.fmt_time(taken_at)}.",
+             "undo": log_id, "logged": [log_id]}
             if status == "taken" else {"text": f"{name} marked skipped.", "undo": log_id}
         )
         return go(back(data.get("back")), msg, request)
+
+    @app.post("/slots/taken")
+    async def record_slots(request: Request):
+        """"Took all" in a compartment: every open home dose that's due or past, at one chosen time."""
+        data = await form(request)
+        current = now()
+        picked: list[tuple[sqlite3.Row, schedule.Slot, datetime]] = []
+        already = 0
+        with db() as conn:
+            for item in _as_list(data.get("slots")):
+                pid, _, key = item.partition("|")
+                if not pid.isdigit():
+                    continue
+                plan_row = store.plan(conn, int(pid))
+                slot = schedule.find_slot(conn, int(pid), key) if plan_row else None
+                if slot is None or plan_row["kind"] == "clinic":
+                    continue
+                if store.slot_log(conn, plan_row["id"], slot.key) is not None:
+                    already += 1  # someone logged it since the page loaded: leave theirs
+                    continue
+                try:
+                    when = _chosen_time(data.get("when") or "now", slot, data.get("at_time"), current)
+                except ValueError:
+                    return go(back(data.get("back")), "Pick the time they were taken.", request)
+                if when > current + timedelta(minutes=5):
+                    return go(back(data.get("back")), "That time hasn't happened yet. Log them after they're taken.", request)
+                picked.append((plan_row, slot, when))
+            ids = [store.log_slot(conn, p, s.key, "taken", w, s.dose or None, by=me(request)) for p, s, w in picked]
+        if not ids:
+            return go(back(data.get("back")), "They were already logged." if already else "Nothing to log.", request)
+        times = {w for _, _, w in picked}
+        at = f"at {schedule.fmt_time(next(iter(times)))}" if len(times) == 1 else "at their planned times"
+        text = f"{len(ids)} doses marked taken {at}." if len(ids) > 1 else f"{picked[0][1].plan['med_name']} marked taken {at}."
+        if already:
+            text += f" {already} already logged by someone else."
+        return go(back(data.get("back")), {"text": text, "undo_many": ids, "logged": ids}, request)
+
+    @app.post("/doses/undo")
+    async def undo_doses(request: Request):
+        data = await form(request)
+        with db() as conn:
+            for log_id in _as_list(data.get("ids")):
+                if str(log_id).isdigit():
+                    store.delete_dose_log(conn, int(log_id))
+        return go(back(data.get("back")), "Undone.", request)
 
     @app.post("/dose/{log_id}/undo")
     async def undo_dose(request: Request, log_id: int):
@@ -420,59 +483,153 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             med = store.medication(conn, int(data["medication_id"]))
             if med is None:
                 raise HTTPException(404)
-            warning = schedule.early_dose_warning(conn, med, current, by=me(request))
+            try:
+                when = dose_time(data, current) if (data.get("ago") or data.get("taken_at")) else current
+            except store.InvalidInput as exc:
+                return go(back(data.get("back")), str(exc), request)
+            if when > current + timedelta(minutes=5):
+                return go(back(data.get("back")), "That time hasn't happened yet. Log it after you take it.", request)
+            warning = schedule.early_dose_warning(conn, med, when, by=me(request))
             if warning and data.get("confirm") != "1":
+                # Resubmit the exact time, not "minutes ago", so a slow answer doesn't move it.
+                fields = {k: v for k, v in data.items() if k not in ("confirm", "ago", "pick_time")}
+                fields["taken_at"] = when.strftime("%Y-%m-%dT%H:%M")
                 return render(request, "dose_confirm.html", active="today", med=med, warning=warning,
-                              action="/dose/quick", fields={k: v for k, v in data.items() if k != "confirm"},
-                              when=current, back_url=back(data.get("back")))
-            log_id = store.log_dose(conn, med["id"], current, med["dose"], data.get("reason"),
+                              action="/dose/quick", fields=fields, when=when, back_url=back(data.get("back")))
+            log_id = store.log_dose(conn, med["id"], when, med["dose"], data.get("reason"),
                                     int(data["plan_id"]) if data.get("plan_id") else None, by=me(request))
+        day = "" if when.date() == current.date() else (" yesterday" if (current.date() - when.date()).days == 1
+                                                        else f" on {schedule.fmt_day(when.date())}")
         return go(back(data.get("back")),
-                  {"text": f"{med['name']} logged at {schedule.fmt_time(current)}.", "undo": log_id, "follow": log_id},
+                  {"text": f"{med['name']} logged at {schedule.fmt_time(when)}{day}.", "undo": log_id, "follow": log_id,
+                   "logged": [log_id]},
                   request)
 
+    def log_dose_context(conn: sqlite3.Connection, current: datetime) -> dict[str, Any]:
+        """Everything the "Log a dose" screen needs for every active medicine, so changing the medicine
+        updates the screen without another page load (and the first pick works without scripts)."""
+        meds = [m for m in store.medications(conn) if m["active"]]
+        plans = {m["id"]: store.plans(conn, m["id"]) for m in meds}
+        home_groups, clinic = _medicine_sections(meds, plans)
+        facts = {}
+        for m in meds:
+            an = schedule._as_needed_row(conn, m, None, current)
+            is_prn = any(p["kind"] == "as_needed" for p in plans[m["id"]])
+            line = ""
+            if is_prn:
+                line = an.status_text(current)
+                if an.last_at:
+                    line += f". Last one {schedule.fmt_relative_day(an.last_at.date(), current.date()).lower()} at {schedule.fmt_time(an.last_at)}"
+            facts[m["id"]] = {"dose": m["dose"] or "", "directions": m["directions"] or "", "status": line,
+                              "clinic_note": _clinic_note(conn, m, plans[m["id"]], current.date())}
+        return {"home_groups": home_groups, "clinic": clinic, "facts": facts}
+
+    def dose_new_context(conn: sqlite3.Connection, m: sqlite3.Row, current: datetime) -> dict[str, Any]:
+        """What "Log a dose" shows: the last dose and the label's spacing, and reasons that fit this medicine."""
+        is_prn = any(p["kind"] == "as_needed" for p in store.plans(conn, m["id"]))
+        tags = [sx.BY_KEY[k].name for k, keys in sx.TREATED_BY.items() if m["info_key"] in keys and k in sx.BY_KEY]
+        return {"an": schedule._as_needed_row(conn, m, None, current), "is_prn": is_prn, "reason_tags": tags[:4]}
+
+    def dose_time(data: dict[str, Any], current: datetime) -> datetime:
+        """The time from "When was it taken?": minutes ago, a picked clock time, or a full date and time."""
+        ago = str(data.get("ago") or "")
+        if ago.isdigit():
+            return current - timedelta(minutes=int(ago))
+        if ago == "pick":
+            try:
+                hh, mm = (int(x) for x in str(data.get("pick_time") or "").split(":")[:2])
+                when = current.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            except ValueError:
+                raise store.InvalidInput("Pick the time it was taken.") from None
+            # A time later than now means last night (logging an 11 PM dose at 1 AM).
+            return when - timedelta(days=1) if when > current + timedelta(minutes=5) else when
+        return store.parse_local_dt(data.get("taken_at"), current)
+
+    def dose_reason(data: dict[str, Any]) -> str | None:
+        picked = [r for r in _as_list(data.get("reason")) if r and r != "other"]
+        typed = store.clean(data.get("reason_text"))
+        return ", ".join(picked + ([typed] if typed else [])) or None
+
     @app.get("/dose/new", response_class=HTMLResponse)
-    def new_dose(request: Request, med: int, reason: str = ""):
+    def new_dose(request: Request, med: int | None = None, reason: str = "", back_to: str = "/"):
+        """"Log a dose": one screen with the medicine, the dose and when. Opened with ?med= it's already picked."""
         with db() as conn:
-            m = store.medication(conn, med)
+            if med is not None and store.medication(conn, med) is None:
+                raise HTTPException(404)
+            ctx = log_dose_context(conn, now())
+        return render(request, "dose_new.html", active="today", error=None, back_url=back(back_to), **ctx,
+                      values={"medication_id": str(med or ""), "ago": "0", "reason": reason})
+
+    @app.post("/dose/check")
+    async def check_dose(request: Request):
+        """For the in-place early-dose check on "Log a dose". Saving checks again on the server."""
+        data = await form(request)
+        current = now()
+        with db() as conn:
+            m = store.medication(conn, int(data.get("medication_id") or 0))
             if m is None:
                 raise HTTPException(404)
-            info = schedule.as_needed_for_symptom(conn, reason, now()) if reason else []
-        return render(request, "dose_new.html", active="today", med=m, reason=reason, info=info, error=None,
-                      values={"taken_at": now().strftime("%Y-%m-%dT%H:%M"), "dose": m["dose"] or ""})
+            try:
+                when = dose_time(data, current)
+            except store.InvalidInput as exc:
+                return JSONResponse({"error": str(exc)})
+            if when > current + timedelta(minutes=5):
+                return JSONResponse({"error": "That time hasn't happened yet. Log a dose after you take it."})
+            warning = schedule.early_dose_warning(conn, m, when, by=me(request))
+        return JSONResponse({"warning": warning, "when": when.strftime("%Y-%m-%dT%H:%M")})
 
     @app.post("/dose/new")
     async def create_dose(request: Request):
         data = await form(request)
         current = now()
         with db() as conn:
+            if not str(data.get("medication_id") or "").isdigit():
+                return render(request, "dose_new.html", status_code=400, active="today", error="Pick the medicine first.",
+                              back_url=back(data.get("back")), values=data, **log_dose_context(conn, current))
             m = store.medication(conn, int(data["medication_id"]))
             if m is None:
                 raise HTTPException(404)
+            reason = dose_reason(data)
             try:
-                when = store.parse_local_dt(data.get("taken_at"), current)
+                when = dose_time(data, current)
                 if when > current + timedelta(minutes=5):
                     raise store.InvalidInput("That time hasn't happened yet. Log a dose after you take it.")
+                # A clinic medicine on a day it isn't given: the pop-up asked already (clinic_ok). Without scripts, ask here.
+                note = _clinic_note(conn, m, store.plans(conn, m["id"]), when.date())
+                if note and data.get("clinic_ok") != "1" and data.get("confirm") != "1":
+                    fields = {"medication_id": str(m["id"]), "taken_at": when.strftime("%Y-%m-%dT%H:%M"), "clinic_ok": "1",
+                              "dose": data.get("dose") or "", "reason_text": reason or "", "back": data.get("back") or "/"}
+                    return render(request, "dose_confirm.html", active="today", med=m, warning=note, when=when,
+                                  title="Given at the clinic", action="/dose/new", fields=fields, back_url="/dose/new",
+                                  cancel_label="Pick another medicine", cancel_primary=True, confirm_label="Log it anyway",
+                                  note="Only log it here if it was given and nobody has logged it yet.")
                 warning = schedule.early_dose_warning(conn, m, when, by=me(request))
                 if warning and data.get("confirm") != "1":
+                    fields = {"medication_id": str(m["id"]), "taken_at": when.strftime("%Y-%m-%dT%H:%M"), "clinic_ok": "1",
+                              "dose": data.get("dose") or "", "reason_text": reason or "", "back": data.get("back") or "/"}
                     return render(request, "dose_confirm.html", active="today", med=m, warning=warning,
-                                  action="/dose/new", fields={k: v for k, v in data.items() if k != "confirm"},
-                                  when=when, back_url="/")
-                log_id = store.log_dose(conn, m["id"], when, data.get("dose"), data.get("reason"), by=me(request))
+                                  action="/dose/new", fields=fields, when=when, back_url=back(data.get("back")))
+                log_id = store.log_dose(conn, m["id"], when, data.get("dose") or m["dose"], reason, by=me(request))
+                asks = schedule.asks_if_it_helped(conn, store.dose_log(conn, log_id))
             except store.InvalidInput as exc:
-                return render(request, "dose_new.html", status_code=400, active="today", med=m,
-                              reason=data.get("reason", ""), info=[], error=str(exc), values=data)
-        return go(f"/dose/{log_id}?saved=1", None)
+                return render(request, "dose_new.html", status_code=400, active="today", error=str(exc),
+                              back_url=back(data.get("back")), values=data, **log_dose_context(conn, current))
+        day = "" if when.date() == current.date() else (" yesterday" if (current.date() - when.date()).days == 1
+                                                        else f" on {schedule.fmt_day(when.date())}")
+        return go(back(data.get("back")), {"text": f"{m['name']} logged at {schedule.fmt_time(when)}{day}.",
+                                           "undo": log_id, "follow": log_id if asks else None, "logged": [log_id]}, request)
 
     @app.get("/dose/{log_id}", response_class=HTMLResponse)
-    def dose_page(request: Request, log_id: int, saved: int = 0):
+    def dose_page(request: Request, log_id: int, saved: int = 0, back_to: str = "/"):
         with db() as conn:
             row = store.dose_log(conn, log_id)
             if row is None:
                 raise HTTPException(404)
             events = history.events(conn, cfg.tz, "dose", log_id)
-        return render(request, "dose.html", active="today", log=row, saved=bool(saved), error=None,
-                      chips=medinfo.chips_for(row["med_info"]), info=medinfo.lookup(row["med_info"]), events=events)
+            asks = schedule.asks_if_it_helped(conn, row)
+        return render(request, "dose.html", active="today", log=row, saved=bool(saved), error=None, asks=asks,
+                      chips=medinfo.chips_for(row["med_info"]), info=medinfo.lookup(row["med_info"]), events=events,
+                      back_url=back(back_to))
 
     @app.post("/dose/{log_id}")
     async def save_dose(request: Request, log_id: int):
@@ -483,12 +640,14 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 raise HTTPException(404)
             if data.get("seen") and data["seen"] != row["updated_at"]:
                 return render(request, "dose.html", status_code=409, active="today", log=row, saved=False,
+                              asks=schedule.asks_if_it_helped(conn, row), back_url=back(data.get("back")),
                               error=_changed_text(conn, row), chips=medinfo.chips_for(row["med_info"]),
                               info=medinfo.lookup(row["med_info"]))
             try:
                 store.update_dose_log(conn, log_id, data, now(), by=me(request))
             except store.InvalidInput as exc:
                 return render(request, "dose.html", status_code=400, active="today", log=row, saved=False,
+                              asks=schedule.asks_if_it_helped(conn, row), back_url=back(data.get("back")),
                               error=str(exc), chips=medinfo.chips_for(row["med_info"]),
                               info=medinfo.lookup(row["med_info"]))
         return go(back(data.get("back")), "Saved.", request)
@@ -612,7 +771,9 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             plans = {m["id"]: store.plans(conn, m["id"]) for m in meds}
             current = now()
             available = {a.medication_id: a for m in meds for a in [schedule._as_needed_row(conn, m, None, current)]}
-        return render(request, "medicines.html", active="medicines", meds=meds, plans=plans, available=available)
+        home_groups, clinic = _medicine_sections([m for m in meds if m["active"]], plans)
+        return render(request, "medicines.html", active="medicines", meds=meds, plans=plans, available=available,
+                      home_groups=home_groups, clinic=clinic)
 
     @app.get("/medicines/add", response_class=HTMLResponse)
     def add_medicine_page(request: Request):
@@ -633,7 +794,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     async def add_medicine(request: Request):
         data = await form(request)
         keys = _as_list(data.get("keys"))
-        custom = store.clean(data.get("custom_name"))
+        customs = [c for c in (store.clean(x) for x in _as_list(data.get("custom_name"))) if c]
         created = []
         with db() as conn:
             if data.get("action") == "preview":
@@ -648,7 +809,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             for key in keys:
                 if key not in rx_keys:
                     created.append(store.add_from_catalog(conn, key))
-            if custom:
+            for custom in customs:
                 med_id = store.create_medication(conn, {"name": custom, "route": "oral", "category": "custom"})
                 store.create_plan(conn, med_id, {"kind": "as_needed", "start_day": "1", "end_day": ""})
                 created.append(med_id)
@@ -840,18 +1001,30 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     @app.get("/report", response_class=HTMLResponse)
     def report_page(request: Request, cycle: str | None = None, start: str | None = None, end: str | None = None):
         current = now()
+        day = current.date()
         with db() as conn:
             cycles = schedule.all_cycles(conn)
+            this_cycle = schedule.cycle_for_date(conn, day)
             if cycle is None and start is None:
-                cur = schedule.cycle_for_date(conn, current.date())
-                cycle = str(cur["id"]) if cur else None
+                cycle = str(this_cycle["id"]) if this_cycle else None
             s, e, c = report_range(conn, cycle, start, end)
             prefs = get_settings(conn)
             doses = export.dose_rows(conn, s, e, current)
             syms = export.symptom_rows(conn, s, e, _fever(prefs))
         query = urlencode({"cycle": c["id"]} if c else {"start": s.isoformat(), "end": e.isoformat()})
-        return render(request, "report.html", active="report", cycles=cycles, cycle=c, start=s, end=e, doses=doses,
-                      syms=syms, query=query)
+        # Which quick choice is showing, so it can be marked. Anything else opens "Another cycle or dates".
+        if c is not None:
+            period = "this-cycle" if this_cycle is not None and c["id"] == this_cycle["id"] else "other-cycle"
+        elif e == day and s == day - timedelta(days=6):
+            period = "last-7"
+        elif e == day and s == day - timedelta(days=29):
+            period = "last-30"
+        else:
+            period = "dates"
+        quick = {"last-7": urlencode({"start": (day - timedelta(days=6)).isoformat(), "end": day.isoformat()}),
+                 "last-30": urlencode({"start": (day - timedelta(days=29)).isoformat(), "end": day.isoformat()})}
+        return render(request, "report.html", active="report", cycles=cycles, cycle=c, this_cycle=this_cycle,
+                      start=s, end=e, doses=doses, syms=syms, query=query, period=period, quick=quick)
 
     def _download(data: bytes, filename: str, media: str) -> Response:
         return Response(data, media_type=media, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
@@ -886,10 +1059,17 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         with db() as conn:
             backup_log = conn.execute("SELECT * FROM backups ORDER BY id DESC LIMIT 8").fetchall()
             changes = history.count(conn)
+            # The name shown in the setup steps must not change if the page reloads while someone is
+            # off installing ntfy, so keep the first one until reminders are saved.
+            prefs_now = get_settings(conn)
+            draft = prefs_now.get("ntfy_topic_draft") or ""
+            if not prefs_now.get("ntfy_topic") and not draft:
+                draft = reminders.new_topic()
+                put_settings(conn, {"ntfy_topic_draft": draft})
         files = backup.backup_files(cfg)[:12]
         return render(request, "settings.html", active="settings", history=backup_log, files=files, cfg=cfg,
                       next_backup=scheduler.next_at or backup.next_run(cfg, now()), changes=changes,
-                      nudger=nudger, suggested_topic=reminders.new_topic(),
+                      nudger=nudger, suggested_topic=draft or reminders.new_topic(), roles=profiles.ROLES,
                       suggested_url=str(request.base_url).rstrip("/"))
 
     # ------------------------------------------------------------ reminders
@@ -1035,7 +1215,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         if row is None or not row["active"]:
             return go("/who", "Pick someone from the list.", request)
         request.session["profile_id"] = row["id"]
-        return go(back(data.get("next")), f"Hi {row['name']}. Entries you log now show your name.", request)
+        return go(back(data.get("next")), {"text": f"Hi {row['name']}. Entries you log now show your name.", "auto": True}, request)
 
     @app.get("/people", response_class=HTMLResponse)
     def people_page(request: Request):
@@ -1390,6 +1570,74 @@ def rx_days(p: rxparse.ParsedPlan, day1: date | None) -> str:
     return text
 
 
+# Medicines page, "At home": grouped by type, in the order a family reaches for them. Unknown types go last.
+MEDICINE_GROUP_ORDER = ("nausea", "blood", "comfort", "oral_cancer", "premed", "infusion")
+
+
+def _medicine_groups(meds: list[sqlite3.Row]) -> list[tuple[str, str, str, list[sqlite3.Row]]]:
+    info = {key: (name, blurb) for key, name, blurb in medinfo.CATEGORIES}
+    out = []
+    for key in (*MEDICINE_GROUP_ORDER, "other"):
+        group = sorted((m for m in meds if (m["category"] if m["category"] in MEDICINE_GROUP_ORDER else "other") == key),
+                       key=lambda m: m["name"].lower())
+        if group:
+            name, blurb = info.get(key, ("Other medicines", "Added by name"))
+            out.append((key, name, blurb, group))
+    return out
+
+
+def _medicine_sections(meds: list[sqlite3.Row], plans: dict[int, list[sqlite3.Row]]):
+    """Medicines and the "which medicine?" picker share this order.
+
+    At home is what the family gives, so it's grouped by type. The clinic's medicines are one plain list.
+    """
+    def clinic_only(m: sqlite3.Row) -> bool:
+        return bool(plans[m["id"]]) and all(p["kind"] == "clinic" for p in plans[m["id"]])
+    clinic = sorted((m for m in meds if clinic_only(m)), key=lambda m: m["name"].lower())
+    return _medicine_groups([m for m in meds if not clinic_only(m)]), clinic
+
+
+def _chosen_time(choice: str, slot, at_time: str | None, current: datetime) -> datetime:
+    """The time picked in "When was it taken?": now, or a clock time on the dose's day.
+
+    "planned" is no longer offered (exact times only) but is still read, so a page left open from before
+    the change logs the time it showed instead of falling through to now.
+    An evening or bedtime dose logged at an early-morning time was taken after midnight.
+    Raises ValueError when "other time" has no usable time.
+    """
+    if choice == "planned" and slot.time:
+        return slot.dt
+    if choice == "at":
+        hh, mm = (int(x) for x in str(at_time or "").split(":")[:2])
+        when = datetime.combine(slot.date, datetime.min.time()).replace(hour=hh, minute=mm)
+        if slot.time and slot.time >= "18:00" and hh < 6:
+            when += timedelta(days=1)
+        return when
+    return current
+
+
+def _clinic_note(conn: sqlite3.Connection, med: sqlite3.Row, plans: list[sqlite3.Row], day: date) -> str | None:
+    """Why to pause before logging a clinic-only medicine at home, or None when it's fine.
+
+    Shown when every plan is a clinic plan and `day` isn't one of its clinic days this cycle. Usually a mis-tap
+    (an IV anti-nausea medicine for the tablet taken at home), sometimes a family recording an infusion later.
+    """
+    if not plans or any(p["kind"] != "clinic" for p in plans):
+        return None
+    cycle = schedule.cycle_for_date(conn, day)
+    number = schedule.day_number(cycle, day) if cycle else None
+    if cycle is not None and any(
+        p["medication_id"] == med["id"] and p["kind"] == "clinic" and p["start_day"] <= number <= schedule.plan_end(p, cycle)
+        for p in schedule.plans_for(conn, cycle)
+    ):
+        return None
+    days = " and ".join(dict.fromkeys(schedule.days_text(p["start_day"], p["end_day"]).lower() for p in plans))
+    note = f"The infusion team gives {med['name']} at the clinic on {days}."
+    if cycle is not None and 0 <= number <= int(cycle["length_days"]):
+        note += " Today is the day before chemo." if number == 0 else f" Today is day {number}."
+    return note
+
+
 def _as_list(value) -> list[str]:
     if value is None or value == "":
         return []
@@ -1442,19 +1690,33 @@ def _week_summary(rows: list[sqlite3.Row], day: date, fever: float):
     return days, by
 
 
-def ring_points(days: list[schedule.RingDay], size: int = 240):
-    """(day, x, y, outer_x, outer_y) for each cycle day, Day 1 at 12 o'clock, clockwise."""
+def ring_geometry(days: list[schedule.RingDay], size: int = 240, compact: bool = False) -> dict:
+    """Dot positions for the cycle dial: one dot per day around a ring, Day 1 at 12 o'clock, clockwise.
+
+    Index 0 is Day 0 (the day before chemo), just left of the top. Long cycles get smaller dots so
+    neighbours never touch. The full dial leaves room outside the ring for the symptom marks.
+    """
     import math
 
     n = max(len(days), 1)
     c = size / 2
-    r = size / 2 - 22
+    base = size / (16 if compact else 30)
+    pad = 1.7 if compact else 2.6
+    dot = min(base, 2 * math.pi * (c - pad * base) / n * 0.38)
+    r = c - pad * dot - 1
     out = []
     for i, d in enumerate(days):
         a = math.radians(-90 + (i - 1) * 360 / n)
-        out.append((d, round(c + r * math.cos(a), 2), round(c + r * math.sin(a), 2),
-                    round(c + (r + 14) * math.cos(a), 2), round(c + (r + 14) * math.sin(a), 2)))
-    return out
+        cos, sin = math.cos(a), math.sin(a)
+        out.append({
+            "day": d, "x": round(c + r * cos, 2), "y": round(c + r * sin, 2),
+            "sx": round(c + (r + dot * 2.1) * cos, 2), "sy": round(c + (r + dot * 2.1) * sin, 2),
+            "lx": round(c + (r - dot * 2.7) * cos, 2), "ly": round(c + (r - dot * 2.7) * sin + size * 0.022, 2),
+        })
+    return {"dots": out, "size": size, "c": c, "r": round(r, 2), "dot": round(dot, 2),
+            "stroke": round(max(1.5, dot * 0.24), 2), "halo": round(dot * 1.45, 2),
+            "halo_w": round(max(1.75, dot * 0.26), 2), "sym": round(dot * 0.4, 2),
+            "track": round(max(1.25, size / 160), 2)}
 
 
 def short_wait(an: schedule.AsNeeded, now: datetime) -> str:
@@ -1470,7 +1732,8 @@ def _template_globals(templates: Jinja2Templates) -> None:
     env.filters["fmt_time"] = schedule.fmt_time
     env.filters["person_name"] = lambda pid, people: profiles.name_of(people, pid)
     env.globals.update(
-        ring_points=ring_points,
+        ring_geometry=ring_geometry,
+        local_from_utc=schedule.local_from_utc,
         icon_paths=icons.paths,
         show_temp=units.show,
         rx_how=rx_how,
@@ -1487,6 +1750,8 @@ def _template_globals(templates: Jinja2Templates) -> None:
         days_text=schedule.days_text,
         plan_times=schedule.plan_times,
         period_names=schedule.PERIOD_NAMES,
+        period_of=schedule.period_for,
+        reminder_problem=reminders.problem_text,
         kind_names=medinfo.KIND_NAMES,
         route_names=medinfo.ROUTE_NAMES,
         category_names=medinfo.CATEGORY_NAMES,

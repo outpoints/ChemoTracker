@@ -6,13 +6,13 @@
   <div class="page-head">
     <div>
       <h1>Cycles</h1>
-      <p class="sub">Each cycle starts on chemo day (Day 1). Medicines follow their day schedules from there.</p>
+      <p class="sub">Each cycle starts on chemo day, Day 1.</p>
     </div>
   </div>
 
   {% if current %}
-  <a class="card card-pad ring-link" href="/cycles/{{ current.id }}" style="display: grid; gap: var(--s4)">
-    <div class="spread"><h2>Cycle {{ current.number }}{% if current.regimen %} <span class="meta">· {{ current.regimen }}</span>{% endif %}</h2><span class="meta">See the full sheet {{ icon("chevron-right") }}</span></div>
+  <a class="card card-pad ring-link current-cycle" href="/cycles/{{ current.id }}">
+    <div class="spread"><div><h2>Cycle {{ current.number }}</h2>{% if current.regimen %}<p class="meta">{{ current.regimen }}</p>{% endif %}</div>{{ icon("chevron-right", "muted") }}</div>
     {{ ring_svg(ring, 0, current, 260) }}
     {{ ring_legend() }}
   </a>
@@ -24,7 +24,7 @@
     <ul class="list">
       {% for c in cycles | reverse %}
       <li><a class="list-item" href="/cycles/{{ c.id }}">
-        <span class="time" style="font-weight: 700; color: var(--ink); min-width: 2.5rem">#{{ c.number }}</span>
+        <span class="time cycle-no">#{{ c.number }}</span>
         <span class="grow"><span class="title">Day 1 {{ fmt_day(parse_local(c.day1 ~ " 00:00").date()) }}</span><br><span class="meta">{{ c.length_days }} days{% if c.regimen %} · {{ c.regimen }}{% endif %}</span></span>
         {% if current and c.id == current.id %}<span class="pill pill-ok">Now</span>{% endif %}
         {{ icon("chevron-right", "chev") }}
@@ -36,8 +36,9 @@
     {% endif %}
   </div>
 
-  <div class="section-title"><h2>Add the next cycle</h2></div>
-  <form class="card card-pad form" method="post" action="/cycles">
+  <details class="card more" style="margin-top: var(--s5)" {% if not cycles %}open{% endif %}>
+  <summary>Add the next cycle</summary>
+  <form class="form" method="post" action="/cycles">
     <div class="field-row three">
       <div class="field"><label for="number">Cycle number</label><input id="number" name="number" type="number" min="1" max="99" value="{{ defaults.number }}" required></div>
       <div class="field"><label for="day1">Chemo day (Day 1)</label><input id="day1" name="day1" type="date" value="{{ defaults.day1 }}" required></div>
@@ -50,5 +51,6 @@
     <p class="hint">If chemo gets moved, change Day 1 here and every dose shifts with it.</p>
     <button class="btn btn-primary" type="submit">{{ icon("plus") }}Add cycle</button>
   </form>
+  </details>
 </div>
 {% endblock %}

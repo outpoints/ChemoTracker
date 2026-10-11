@@ -446,12 +446,19 @@ def log_dose(conn: sqlite3.Connection, med_id: int, taken_at: datetime, dose: st
     return rowid(cur)
 
 
+def _first(value) -> str | None:
+    """A single choice from a field that may arrive as a list (toggle chips submitted without scripts)."""
+    if isinstance(value, list):
+        value = next((v for v in value if v), None)
+    return value or None
+
+
 def update_dose_log(conn: sqlite3.Connection, log_id: int, values: dict, fallback: datetime, by: int | None = None) -> None:
     status = values.get("status") or "taken"
     if status not in ("taken", "skipped"):
         raise InvalidInput("Unknown status.")
-    helped = values.get("helped") or None
-    feel = values.get("dose_feel") or None
+    helped = _first(values.get("helped"))
+    feel = _first(values.get("dose_feel"))
     if helped is not None and helped not in HELPED:
         helped = None
     if feel is not None and feel not in DOSE_FEEL:

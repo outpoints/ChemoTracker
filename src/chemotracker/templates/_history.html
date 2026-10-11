@@ -17,7 +17,7 @@
     </ul>
     {% endif %}
     {% if e.can_put_back %}
-    <form method="post" action="/history/{{ e.id }}/put-back" style="margin-top: var(--s2)">
+    <form class="put-back" method="post" action="/history/{{ e.id }}/put-back">
       <input type="hidden" name="back" value="{{ back }}">
       <button class="btn btn-secondary btn-sm" type="submit">{{ icon("undo") }}Put it back</button>
     </form>
@@ -30,8 +30,8 @@
 {%- endmacro %}
 
 {% macro history_card(events, title="Change history") -%}
-<details class="card more history-card" style="padding: 0 var(--s5)">
+<details class="card more history-card">
   <summary>{{ icon("history") }}{{ title }} <span class="meta">&nbsp;· {{ events | length }} {{ "change" if events | length == 1 else "changes" }}</span></summary>
-  <div style="padding-bottom: var(--s4)">{{ history_list(events) }}</div>
+  <div>{{ history_list(events) }}</div>
 </details>
 {%- endmacro %}

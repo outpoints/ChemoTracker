@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f2f5f4" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0c161a" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ebf0ef" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#081114" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="ChemoTracker">
   <meta name="robots" content="noindex, nofollow">
@@ -25,7 +25,7 @@
   ("cycles", "/cycles", "Cycle", "ring"),
   ("report", "/report", "Report", "report"),
 ] %}
-<a class="visually-hidden" href="#main">Skip to content</a>
+<a class="skip-link" href="#main">Skip to content</a>
 <div class="shell">
   <aside class="sidebar" aria-label="Main">
     <a class="brand" href="/"><img class="brand-mark" src="/static/icon.svg" alt="">ChemoTracker</a>
@@ -40,9 +40,11 @@
       {% if me %}
       <a class="me-chip" href="/who?next={{ request.url.path }}" title="Switch person">{{ avatar(me) }}<span class="grow"><span class="meta">Using as</span><br><strong>{{ me.name }}</strong></span><span class="meta">Switch</span></a>
       {% endif %}
-      {% if prefs.clinic_phone %}
-      <div class="meta">Care team</div>
-      <a class="phone-link" href="tel:{{ prefs.clinic_phone | replace(' ', '') }}">{{ icon("phone") }}{{ prefs.clinic_phone }}</a>
+      {% if prefs.clinic_phone or prefs.after_hours_phone %}
+      {%- set n_night = (now.hour >= 21 or now.hour < 7) and prefs.after_hours_phone %}
+      {%- set n_no = prefs.after_hours_phone if n_night else (prefs.clinic_phone or prefs.after_hours_phone) %}
+      <div class="meta">{{ "After hours" if n_night or not prefs.clinic_phone else "Care team" }}</div>
+      <a class="phone-link" href="tel:{{ n_no | replace(' ', '') }}">{{ icon("phone") }}{{ n_no }}</a>
       {% endif %}
       {% if password_on %}
       <form method="post" action="/logout"><button class="btn btn-quiet btn-sm" type="submit">Sign out</button></form>
@@ -50,11 +52,14 @@
     </div>
   </aside>
 
+  {%- set night_call = (now.hour >= 21 or now.hour < 7) and prefs.after_hours_phone %}
+  {%- set call_no = prefs.after_hours_phone if night_call else (prefs.clinic_phone or prefs.after_hours_phone) %}
+  {%- set call_label = "Call the after-hours line" if night_call or not prefs.clinic_phone else "Call your care team" %}
   <header class="topbar">
-    <a class="brand" href="/"><img class="brand-mark" src="/static/icon.svg" alt="">ChemoTracker</a>
-    <span class="row" style="gap: var(--s2)">
-      {% if prefs.clinic_phone %}<a class="icon-link call-link" href="tel:{{ prefs.clinic_phone | replace(' ', '') }}" aria-label="Call your care team, {{ prefs.clinic_phone }}">{{ icon("phone") }}</a>{% endif %}
-      {% if me %}<a class="me-chip compact" href="/who?next={{ request.url.path }}" aria-label="Using as {{ me.name }}. Switch person">{{ avatar(me) }}<span>{{ me.name }}</span></a>{% endif %}
+    <a class="brand" href="/"><img class="brand-mark" src="/static/icon.svg" alt=""><span class="brand-name">ChemoTracker</span></a>
+    <span class="topbar-actions">
+      {% if call_no %}<a class="icon-link call-link" href="tel:{{ call_no | replace(' ', '') }}" aria-label="{{ call_label }}, {{ call_no }}">{{ icon("phone") }}</a>{% endif %}
+      {% if me %}<a class="me-chip compact" href="/who?next={{ request.url.path }}" aria-label="Using as {{ me.name }}. Switch person">{{ avatar(me) }}<span class="me-name">{{ me.name }}</span></a>{% endif %}
       <a class="icon-link" href="/settings" aria-label="Settings" {% if active == "settings" %}aria-current="page"{% endif %}>{{ icon("settings") }}</a>
     </span>
   </header>
@@ -63,7 +68,7 @@
     {% if db_health and db_health != "ok" %}
     <div class="callout callout-urgent" role="alert" style="margin-bottom: var(--s4)">{{ icon("triangle-alert") }}
       <div class="grow"><h3>Database check found a problem</h3>
-        <p style="margin-top: var(--s1)">Some entries may be damaged ({{ db_health }}). Keep a note on paper for now and ask whoever set this up to restore the newest backup.</p></div>
+        <p>Some entries may be damaged ({{ db_health }}). Keep a note on paper for now and ask whoever set this up to restore the newest backup.</p></div>
     </div>
     {% endif %}
     {% include "_flash.html" %}

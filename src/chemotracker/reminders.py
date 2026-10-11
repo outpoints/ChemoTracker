@@ -160,6 +160,21 @@ def send(prefs: dict[str, str], r: Reminder, timeout: float = 10) -> None:
         raise RuntimeError(f"couldn't reach {server} ({exc.reason})") from None
 
 
+def problem_text(error: str | None) -> str:
+    """What a failed reminder means for the family, in plain words. The raw error stays available as details."""
+    e = (error or "").lower()
+    if "couldn't reach" in e:
+        return ("The reminder server didn't answer. Check that this computer is online, "
+                "and that the server address under Advanced is right.")
+    if "answered 401" in e or "answered 403" in e:
+        return "The reminder server turned it down. Check the access token under Advanced, or ask whoever set it up."
+    if "answered 429" in e:
+        return "Too many reminders went out at once. They'll start again on their own in a few minutes."
+    if "answered 5" in e:
+        return "The reminder server had a problem on its side. It'll try again with the next reminder."
+    return "The last reminder didn't go through. It'll try again with the next one."
+
+
 def test_reminder(prefs: dict[str, str]) -> Reminder:
     url = (prefs.get("app_url") or "").rstrip("/") or None
     return Reminder("test", "ChemoTracker test", "Reminders work on this phone.", ("white_check_mark",), 3, url)

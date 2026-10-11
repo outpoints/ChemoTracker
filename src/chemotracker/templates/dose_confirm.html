@@ -7,14 +7,14 @@
     {{ icon("triangle-alert") }}
     <div class="grow">
       <h1 class="callout-title">{{ title or "Check before you log this" }}</h1>
-      <p style="margin-top: var(--s2)">{{ warning }}</p>
+      <p>{{ warning }}</p>
     </div>
   </div>
   <div class="card card-pad stack-sm">
     <div class="meta">{{ lead or "You're logging" }}</div>
     <div class="dose-name">{{ med.name }}{% if med.strength %} <span class="meta">{{ med.strength }}</span>{% endif %}</div>
     <div class="meta">{{ fmt_rel(when.date(), today) }} at {{ fmt_time(when) }}</div>
-    {% if med.directions %}<p class="rx-sig" style="margin-top: var(--s2)">Label: {{ med.directions }}</p>{% endif %}
+    {% if med.directions %}<p class="rx-sig">Label: {{ med.directions }}</p>{% endif %}
   </div>
   <p class="meta">{{ note or "If you already took it, log it so the record is right. If you're unsure, ask your care team before taking more." }}</p>
   <form method="post" action="{{ action }}">

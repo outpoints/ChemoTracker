@@ -1,21 +1,23 @@
 {% extends "base.html" %}
 {% block title %}Cycle {{ cycle.number }} · ChemoTracker{% endblock %}
 {% block content %}
-{% from "_ui.html" import icon, ring_svg, ring_legend %}
+{% from "_ui.html" import icon, ring_svg, ring_legend, tchip %}
 {% set day1 = parse_local(cycle.day1 ~ " 00:00").date() %}
 {% set idx = (cycles | map(attribute="id") | list).index(cycle.id) %}
 <div class="page">
-  <a class="btn btn-quiet" href="/cycles" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Cycles</a>
-  <div class="page-head" style="margin-top: var(--s2)">
-    <div>
-      <div class="eyebrow">Day 1 {{ fmt_day(day1) }} · {{ cycle.length_days }} days{% if cycle.regimen %} · {{ cycle.regimen }}{% endif %}</div>
-      <h1>Cycle {{ cycle.number }}</h1>
+  <a class="btn btn-quiet back-link" href="/cycles">{{ icon("arrow-left") }}Cycles</a>
+  <div class="page-head">
+    <div class="head-row">
+      <div>
+        <h1>Cycle {{ cycle.number }}</h1>
+        <p class="sub">Chemo day {{ fmt_day(day1) }} · {{ cycle.length_days }} days{% if cycle.regimen %} · {{ cycle.regimen }}{% endif %}</p>
+      </div>
+      <nav class="daynav" aria-label="Other cycles">
+        {% if idx > 0 %}<a href="/cycles/{{ cycles[idx - 1].id }}" aria-label="Previous cycle">{{ icon("chevron-left") }}</a>{% endif %}
+        {% if idx < cycles | length - 1 %}<a href="/cycles/{{ cycles[idx + 1].id }}" aria-label="Next cycle">{{ icon("chevron-right") }}</a>{% endif %}
+      </nav>
     </div>
-    <nav class="daynav" aria-label="Other cycles">
-      {% if idx > 0 %}<a href="/cycles/{{ cycles[idx - 1].id }}" aria-label="Previous cycle">{{ icon("chevron-left") }}</a>{% endif %}
-      <a class="btn btn-quiet btn-sm" href="/report?cycle={{ cycle.id }}">{{ icon("clipboard-list") }}Report</a>
-      {% if idx < cycles | length - 1 %}<a href="/cycles/{{ cycles[idx + 1].id }}" aria-label="Next cycle">{{ icon("chevron-right") }}</a>{% endif %}
-    </nav>
+    <a class="btn btn-secondary btn-sm" href="/report?cycle={{ cycle.id }}">{{ icon("clipboard-list") }}Report for this cycle</a>
   </div>
 
   {# ---------- phone: pick a day, see that day as a list ---------- #}
@@ -36,7 +38,7 @@
           <h2>{{ day_label(sel) }}</h2>
           <div class="meta">{{ fmt_rel(sel_date, today) }}{% if sel_date != today %} · {{ fmt_day(sel_date) }}{% endif %}</div>
         </div>
-        <a class="btn btn-soft btn-sm" href="/?d={{ sel_date.isoformat() }}">{{ "Log doses" if sel_date <= today else "Open day" }}</a>
+        <a class="btn btn-secondary btn-sm" href="/?d={{ sel_date.isoformat() }}">{{ "Log doses" if sel_date <= today else "Open day" }}</a>
       </div>
       <div class="card-body">
         {% set planned_items = day_items | rejectattr("0.kind", "equalto", "as_needed") | list %}
@@ -48,14 +50,14 @@
           {% for r, c in items %}
           <li>
             <span class="dl-mark {{ 'taken' if c.taken else ('missing' if c.missing else ('skipped' if c.skipped else ('allowed' if r.kind == 'as_needed' else 'planned'))) }}">
-              {%- if c.taken %}{{ icon("check") }}{% elif c.missing %}!{% elif c.skipped %}–{% elif r.kind == "as_needed" %}{{ icon("pill") }}{% else %}{{ icon("clock") }}{% endif -%}
+              {%- if c.taken %}{{ icon("check") }}{% elif c.missing %}{{ icon("triangle-alert") }}{% elif c.skipped %}{{ icon("minus") }}{% elif r.kind == "as_needed" %}{{ icon("pill") }}{% else %}{{ icon("clock") }}{% endif -%}
             </span>
             <span class="grow">
               <a class="dl-name" href="/medicines/{{ r.medication_id }}">{{ r.name }}</a>
-              <span class="meta">{{ kind_names[r.kind] }}{% if r.detail %} · {{ r.detail }}{% endif %}</span>
+              <span class="plan-line">{% if r.kind == "scheduled" and c.times %}{% for t in c.times | unique %}{{ tchip("scheduled", t) }}{% endfor %}{% elif not (r.kind == "as_needed" and planned_items) %}{{ tchip(r.kind) }}{% endif %}{% if r.detail %}<span class="plan-days">{{ r.detail }}</span>{% endif %}</span>
             </span>
             <span class="dl-status">
-              {%- if c.taken %}{% for t in c.taken %}{{ "Given" if r.kind == "clinic" else (fmt_time(t.taken_at) if t.taken_at else "Taken") }}{% if not loop.last %}, {% endif %}{% endfor %}
+              {%- if c.taken %}{% for t in c.taken %}{{ ("Given " if r.kind == "clinic" else "") ~ (fmt_time(t.taken_at) if t.taken_at else ("" if r.kind == "clinic" else "Taken")) }}{% if not loop.last %}, {% endif %}{% endfor %}
               {%- elif c.missing %}Not logged
               {%- elif c.skipped %}Skipped
               {%- elif r.kind == "as_needed" %}Not taken
@@ -82,11 +84,11 @@
     </article>
   </section>
 
-  <div class="two-col">
+  <div class="two-col cycle-cols">
     <div class="stack">
       <details class="sheet-toggle" open>
       <summary class="only-mobile">{{ icon("calendar-days") }}&nbsp;See the whole cycle as a sheet</summary>
-      <p class="meta">✓ taken (time) · – skipped · ! not logged · ○ planned · shaded = as-needed allowed. Symptoms show the worst entry each day.</p>
+      <ul class="sheet-key meta"><li><b>✓ 8:05a</b> taken at</li><li><b>–</b> skipped</li><li><b>!</b> nothing logged</li><li><b>○</b> planned</li><li><i></i> as-needed allowed</li></ul>
       <div class="sheet-wrap">
         <table class="sheet">
           <thead>
@@ -101,14 +103,14 @@
           <tbody>
             {% for r in med_rows %}
             <tr>
-              <th class="name" scope="row"><a href="/medicines/{{ r.medication_id }}" class="n" style="text-decoration: none">{{ r.name }}</a><small>{{ kind_names[r.kind] }}{% if r.detail %} · {{ r.detail }}{% endif %}</small></th>
+              <th class="name" scope="row"><a href="/medicines/{{ r.medication_id }}" class="n">{{ r.name }}</a><small>{{ kind_names[r.kind] }}{% if r.detail %} · {{ r.detail }}{% endif %}</small></th>
               {% for dn in days %}
               {% set c = r.cells[dn] %}
               {% set d = day1 + timedelta(days=dn - 1) %}
               {% set cls = "missing" if c.missing else ("taken" if c.taken else ("skipped" if c.skipped else ("upcoming" if c.upcoming else ("allowed" if c.allowed else "")))) %}
               {% set names = (c.taken + c.skipped) | map(attribute="logged_by") | select | map("person_name", people) | unique | join(", ") %}
               <td class="cell {{ cls }} {{ 'today-col' if d == today }}"{% if names %} title="Logged by {{ names }}"{% endif %}>
-                {%- for t in c.taken %}✓{% if t.taken_at and r.kind != "clinic" %} {{ fmt_time(t.taken_at) | replace(" AM", "a") | replace(" PM", "p") }}{% endif %}<br>{% endfor -%}
+                {%- for t in c.taken %}✓{% if t.taken_at %} {{ fmt_time(t.taken_at) | replace(" AM", "a") | replace(" PM", "p") }}{% endif %}<br>{% endfor -%}
                 {%- if c.allowed and not c.taken %}<span class="visually-hidden">allowed</span>{% endif -%}
                 {%- for t in c.skipped %}–<br>{% endfor -%}
                 {%- for _ in range(c.missing) %}!<br>{% endfor -%}
@@ -148,9 +150,9 @@
         {{ ring_svg(ring, 0, cycle, 240) }}
         {{ ring_legend() }}
       </div>
-      <details class="card more" id="change" style="padding: 0 var(--s5)" {% if change %}open{% endif %}>
+      <details class="card more" id="change" {% if change %}open{% endif %}>
         <summary>{{ icon("calendar-days") }}&nbsp;Chemo moved? Change the date</summary>
-        <form class="form" method="post" action="/cycles/{{ cycle.id }}" style="padding-bottom: var(--s5)">
+        <form class="form" method="post" action="/cycles/{{ cycle.id }}">
           <div class="field"><label>Chemo day (Day 1)</label><input name="day1" type="date" value="{{ cycle.day1 }}" required>
             <p class="hint">Every dose in this cycle moves with it.</p></div>
           {% if later %}
@@ -170,7 +172,7 @@
         </form>
       </details>
       <form method="post" action="/cycles/{{ cycle.id }}/delete" data-confirm="Delete cycle {{ cycle.number }}? Logged doses and symptoms are kept.">
-        <button class="btn btn-danger btn-block" type="submit">{{ icon("trash") }}Delete cycle</button>
+        <button class="btn btn-danger btn-quieter" type="submit">{{ icon("trash") }}Delete this cycle</button>
       </form>
     </aside>
   </div>

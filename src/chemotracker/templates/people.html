@@ -3,11 +3,11 @@
 {% block content %}
 {% from "_ui.html" import icon, avatar %}
 <div class="page page-narrow">
-  <a class="btn btn-quiet" href="/settings" style="margin-left: calc(var(--s3) * -1)">{{ icon("arrow-left") }}Settings</a>
-  <div class="page-head" style="margin-top: var(--s2)">
+  <a class="btn btn-quiet back-link" href="/settings">{{ icon("arrow-left") }}Settings</a>
+  <div class="page-head">
     <div>
       <h1>People</h1>
-      <p class="sub">Everyone who logs doses or symptoms. Each entry, and the care-team report, shows who logged it.</p>
+      <p class="sub">Every entry and the report show who logged it.</p>
     </div>
   </div>
 
@@ -21,7 +21,7 @@
           <summary class="list-item">
             {{ avatar(p) }}
             <span class="grow"><span class="title">{{ p.name }}</span>{% if me and me.id == p.id %} <span class="badge">This device</span>{% endif %}<br>
-              <span class="meta">{{ roles[p.role] }} · {{ n[0] }} doses, {{ n[1] }} symptoms logged</span></span>
+              <span class="meta">{{ roles[p.role] }} · {{ n[0] }} {{ "dose" if n[0] == 1 else "doses" }}, {{ n[1] }} {{ "symptom" if n[1] == 1 else "symptoms" }} logged</span></span>
             {{ icon("edit", "chev") }}
           </summary>
           <div class="card-body stack">

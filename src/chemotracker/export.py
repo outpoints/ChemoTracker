@@ -166,7 +166,7 @@ def doses_csv(conn: sqlite3.Connection, start: date, end: date, now: datetime) -
     for r in dose_rows(conn, start, end, now):
         w.writerow([
             r.when.date().isoformat() if r.when else "",
-            r.when.strftime("%H:%M") if r.when and r.status == "Taken" and r.kind != "Clinic" else "",
+            r.when.strftime("%H:%M") if r.when and r.status == "Taken" else "",
             r.planned.strftime("%H:%M") if r.planned else "",
             r.cycle or "", "" if r.day is None else r.day, r.medicine, r.strength, r.dose, r.kind, r.status,
             r.reason, r.helped, r.dose_feel, r.side_effects, r.notes, r.by,
@@ -406,7 +406,7 @@ def _dose_sheet(ws: Worksheet, sub, doses: list[DoseRow]) -> None:
         row += 1
         values = [
             r.when.date() if r.when else None,
-            r.when.strftime("%I:%M %p").lstrip("0") if r.when and r.status == "Taken" and r.kind != "Clinic" else "",
+            r.when.strftime("%I:%M %p").lstrip("0") if r.when and r.status == "Taken" else "",
             r.planned.strftime("%I:%M %p").lstrip("0") if r.planned else "",
             r.cycle or "", "" if r.day is None else r.day, r.medicine, r.strength, r.dose, r.kind, r.status,
             r.reason, r.helped, r.dose_feel, r.side_effects, r.notes, r.by,
@@ -467,7 +467,7 @@ def _grid_sheet(ws: Worksheet, conn, cycle: sqlite3.Row, now: datetime) -> None:
         ws.cell(row=row, column=2, value=KIND_SHORT[r.kind]).alignment = CENTER
         for i, dn in enumerate(days):
             cell = r.cells[dn]
-            parts = [f"✓ {schedule.fmt_time(t['taken_at'])}" if t["taken_at"] and r.kind != "clinic" else "✓"
+            parts = [f"✓ {schedule.fmt_time(t['taken_at'])}" if t["taken_at"] else "✓"
                      for t in cell.taken]
             parts += ["–" for _ in cell.skipped]
             parts += ["!" for _ in range(cell.missing)]

@@ -81,15 +81,19 @@ def main() -> None:
             if s.date < today or (s.time and s.date == today and s.dt <= now - timedelta(hours=1)):
                 taken = s.dt + timedelta(minutes=7 + i % 9) if s.time else datetime.combine(s.date, datetime.min.time()).replace(hour=10)
                 log = store.log_slot(conn, s.plan, s.key, "taken", taken, s.dose or None, by=who[i % 3])
-                if s.kind != "clinic":
-                    store.quick_follow_up(conn, log, "yes", "right", by=john)
+                # Scheduled doses are left unanswered: "Did it help?" doesn't apply and "How was the dose?" is optional.
 
         comp = conn.execute("SELECT id FROM medications WHERE info_key = 'prochlorperazine'").fetchone()["id"]
         prn = store.log_dose(conn, comp, now - timedelta(hours=2, minutes=20), "1 tablet", "Nausea", by=john)
+
+    # Jane fills in how John's dose went. Saved the way the app saves (a write session with her as the actor),
+    # so Change history shows the same edit the Report credits her with.
+    with session(cfg.db_path, write=True, actor=jane) as conn:
         store.update_dose_log(conn, prn, {"status": "taken", "taken_at": (now - timedelta(hours=2, minutes=20)).strftime("%Y-%m-%d %H:%M"),
                                           "dose": "1 tablet", "reason": "Nausea", "helped": "some", "dose_feel": "not_enough",
-                                          "side_effects[]": ["Drowsy"]}, now, by=jane)
+                                          "side_effects": ["Drowsy"]}, now, by=jane)
 
+    with session(cfg.db_path) as conn:
         yesterday = now - timedelta(days=1)
         entries = [
             (yesterday.replace(hour=9, minute=40), {"symptom": "nausea", "severity": "2", "notes": "After breakfast"}, john),
