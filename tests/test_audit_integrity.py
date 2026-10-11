@@ -172,10 +172,19 @@ def test_deleted_medicine_history_takes_the_name_of_the_next_medicine_added(clie
     with session(cfg.db_path) as conn:
         newest = conn.execute("SELECT id, name FROM medications ORDER BY id DESC LIMIT 1").fetchone()
     _post_ok(client, "/dose/new", {"medication_id": str(newest["id"]), "taken_at": f"{y.isoformat()}T10:00", "back": "/"})
+    # Since F16 a medicine with logged doses can't be deleted, so the dose goes first (logged by mistake).
+    with session(cfg.db_path) as conn:
+        dose_id = conn.execute("SELECT id FROM dose_logs WHERE medication_id = ?", (newest["id"],)).fetchone()["id"]
+    client.post(f"/dose/{dose_id}/delete", data={"back": "/"}, follow_redirects=False)
     client.post(f"/medicines/{newest['id']}/delete", follow_redirects=False)
     with session(cfg.db_path, write=True) as conn:
         new_id = store.add_from_catalog(conn, "pegfilgrastim")
-    assert new_id == newest["id"]  # precondition: SQLite reused the id
+    assert new_id != newest["id"], "the next medicine added was given the deleted medicine's id"
+    # A record from before the v5 upgrade can still hold a reused id: add a medicine with the freed id, the way
+    # SQLite used to, so the history has to tell the two apart by time.
+    with session(cfg.db_path, write=True) as conn:
+        conn.execute("INSERT INTO medications (id, name, route, created_at, updated_at) VALUES (?, 'Pegfilgrastim', "
+                     "'injection', '2030-01-01T00:00:00+00:00', '2030-01-01T00:00:00+00:00')", (newest["id"],))
     with session(cfg.db_path) as conn:
         deleted = [e for e in history.events(conn, cfg.tz, entity="dose") if e.action == "deleted"]
     assert deleted and all(e.subject == newest["name"] for e in deleted), \

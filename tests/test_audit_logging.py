@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chemotracker import schedule, web
-from chemotracker.db import session
+from chemotracker.db import connect, session
 
 from .conftest import local_now, setup_walkthrough, today
 
@@ -61,6 +61,17 @@ def _hidden(page: str, action: str) -> dict:
     form = page.split(f'action="{action}"')[1].split("</form>")[0]
     return {html.unescape(k): html.unescape(v)
             for k, v in re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form)}
+
+
+def _as_if_reused(cfg, new_id: int, old_id: int) -> None:
+    """Since the v5 upgrade SQLite never hands a freed dose id to a new dose. A record from before it can still
+    hold such a pair, so give the new dose the freed id the way SQLite did, history included."""
+    conn = connect(cfg.db_path)
+    try:
+        conn.execute("UPDATE dose_logs SET id = ? WHERE id = ?", (old_id, new_id))
+        conn.execute("UPDATE history SET ref = ? WHERE entity = 'dose' AND ref = ?", (str(old_id), str(new_id)))
+    finally:
+        conn.close()
 
 
 def _tap(device, plan, key, **extra):
@@ -139,6 +150,10 @@ def test_an_old_undo_button_never_removes_a_different_dose(client, cfg):
     # John undoes his own entry, then logs the morning Dexamethasone. SQLite hands it the freed id.
     client.post(f"/dose/{shot_id}/undo", data={"back": "/"})
     _tap(client, dex, f"{y} 08:00", taken_at=f"{y}T08:05")
+    with session(cfg.db_path) as conn:
+        dex_id = _taken(conn, "Dexamethasone", y)[0]["id"]
+    assert dex_id != shot_id  # v5: SQLite no longer hands it the freed id...
+    _as_if_reused(cfg, dex_id, shot_id)  # ...but a record from before the upgrade can have one
     with session(cfg.db_path) as conn:
         assert _taken(conn, "Dexamethasone", y)[0]["id"] == shot_id  # same id, different dose
     # Jane taps Undo on the Filgrastim row her phone still shows.
@@ -403,6 +418,10 @@ def test_a_late_follow_up_answer_never_lands_on_a_different_dose(client, cfg):
     client.post(f"/dose/{pill['id']}/undo", data={"back": "/"})
     _tap(client, dex, f"{today(cfg)} 08:00", when="now")
     with session(cfg.db_path) as conn:
+        dex_id = _taken(conn, "Dexamethasone", None)[0]["id"]
+    assert dex_id != pill["id"]  # v5: SQLite no longer hands it the freed id...
+    _as_if_reused(cfg, dex_id, pill["id"])  # ...but a record from before the upgrade can have one
+    with session(cfg.db_path) as conn:
         assert _taken(conn, "Dexamethasone", None)[0]["id"] == pill["id"]
     r = jane.post(f"/dose/{pill['id']}/follow", data={"helped": "no", "dose_feel": "too_strong", "back": "/"})
     with session(cfg.db_path) as conn:
@@ -473,6 +492,10 @@ def test_a_removed_dose_can_still_be_put_back_after_its_id_is_reused(client, cfg
         shot_id = _taken(conn, "Filgrastim", y)[0]["id"]
     client.post(f"/dose/{shot_id}/delete", data={"back": "/"})  # removed by mistake
     _tap(client, dex, f"{y} 08:00", taken_at=f"{y}T08:05")
+    with session(cfg.db_path) as conn:
+        dex_id = _taken(conn, "Dexamethasone", y)[0]["id"]
+    assert dex_id != shot_id  # v5: SQLite no longer hands it the freed id...
+    _as_if_reused(cfg, dex_id, shot_id)  # ...but a record from before the upgrade can have one
     with session(cfg.db_path) as conn:
         assert _taken(conn, "Dexamethasone", y)[0]["id"] == shot_id
         event = conn.execute("SELECT id FROM history WHERE action = 'deleted' AND ref = ?", (str(shot_id),)).fetchone()["id"]
