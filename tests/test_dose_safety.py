@@ -7,6 +7,7 @@ changed, and the app showed the shot as due again and let a second one be logged
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime, timedelta
 
 from chemotracker import export, reminders, schedule, store
@@ -259,3 +260,45 @@ def test_took_one_stays_an_as_needed_dose_after_its_plan_changes_or_is_deleted(c
         assert [s.time for s in evening] == ["20:00"] and evening[0].log is None
         extras = schedule.extra_doses(conn, None, y)
     assert any(x["medication_id"] == prn["medication_id"] and x["taken_at"].endswith("21:00") for x in extras)
+
+
+def _form_fields(page: str, action: str) -> dict:
+    form = page.split(f'action="{action}"')[1].split("</form>")[0]
+    return {html.unescape(k): html.unescape(v)
+            for k, v in re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)">', form)}
+
+
+def test_the_undo_shown_after_replace_it_with_mine_puts_the_earlier_entry_back(client, cfg):
+    # Jane replaces John's entry, then sees John's was right and taps Undo in her message: John's entry comes back.
+    # An Undo John still has on screen from before her change does nothing, and says why.
+    from fastapi.testclient import TestClient
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    y = today(cfg) - timedelta(days=1)
+    with session(cfg.db_path) as conn:
+        plan = _plan(conn, "Filgrastim")
+        jane_id = conn.execute("SELECT id FROM profiles WHERE name = 'Jane'").fetchone()["id"]
+    tap = {"plan_id": plan["id"], "slot": f"{y.isoformat()} 15:00", "status": "taken", "back": "/"}
+    assert client.post("/slot", data={**tap, "taken_at": f"{y.isoformat()}T15:05"}, follow_redirects=False).status_code == 303
+    johns_page = client.get(f"/?d={y.isoformat()}").text
+    with session(cfg.db_path) as conn:
+        log_id = _taken(conn, "Filgrastim", y)[0]["id"]
+    johns_undo = _form_fields(johns_page, f"/dose/{log_id}/undo")
+    jane = TestClient(client.app)
+    jane.post("/who", data={"profile_id": str(jane_id), "next": "/"})
+    r = jane.post("/slot", data={**tap, "taken_at": f"{y.isoformat()}T15:20"}, follow_redirects=False)
+    assert r.status_code == 409
+    r = jane.post("/slot", data=_form_fields(r.text, "/slot"), follow_redirects=False)  # Replace it with mine
+    assert r.status_code == 303
+    toast = jane.get("/").text
+    undo = _form_fields(toast, f"/dose/{log_id}/undo")
+    assert undo.get("restore") and undo.get("seen")
+    # John's old row Undo: the dose changed since, so nothing happens.
+    r = client.post(f"/dose/{log_id}/undo", data=johns_undo, follow_redirects=True)
+    assert "left as it is" in html.unescape(r.text)
+    with session(cfg.db_path) as conn:
+        assert _taken(conn, "Filgrastim", y)[0]["taken_at"] == f"{y.isoformat()} 15:20"
+    # Jane's Undo puts John's entry back instead of deleting the shot.
+    jane.post(f"/dose/{log_id}/undo", data=undo, follow_redirects=False)
+    with session(cfg.db_path) as conn:
+        logs = _taken(conn, "Filgrastim", y)
+    assert len(logs) == 1 and logs[0]["taken_at"] == f"{y.isoformat()} 15:05"

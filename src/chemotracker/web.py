@@ -378,16 +378,19 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         fields["confirm"], fields["warned"] = "anyway", warn_hash(warning)
         return fields
 
-    def remember_tap(request: Request, plan_id: int, key: str, status: str, log_id: int, stamp: str) -> None:
+    def remember_tap(request: Request, plan_id: int, key: str, status: str, log_id: int, stamp: str,
+                     replaced: bool = False, restore: int | None = None) -> None:
         """This device's recent taps, so its own double tap is recognised (and another phone's tap never is)."""
         taps = [t for t in request.session.get("taps", []) if time.time() - t[5] < 120][-9:]
-        taps.append([plan_id, key, status, log_id, stamp, time.time()])
+        taps.append([plan_id, key, status, log_id, stamp, time.time(), replaced, restore])
         request.session["taps"] = taps
 
-    def repeat_tap(request: Request, slot: schedule.Slot, status: str, existing: sqlite3.Row) -> bool:
+    def repeat_tap(request: Request, slot: schedule.Slot, status: str, existing: sqlite3.Row) -> list | None:
+        """The tap this device just made on this dose, if this post repeats it (a double tap)."""
         stamp = store.dose_stamp(existing)
-        return any(t[0] == slot.plan["id"] and t[1] == slot.key and t[2] == status and t[3] == existing["id"]
-                   and t[4] == stamp and time.time() - t[5] < 120 for t in request.session.get("taps", []))
+        return next((t for t in reversed(request.session.get("taps", []))
+                     if t[0] == slot.plan["id"] and t[1] == slot.key and t[2] == status and t[3] == existing["id"]
+                     and t[4] == stamp and time.time() - t[5] < 120), None)
 
     def last_event(conn: sqlite3.Connection, log_id: int) -> sqlite3.Row | None:
         return conn.execute("SELECT * FROM history WHERE entity = 'dose' AND ref = ? ORDER BY id DESC LIMIT 1",
@@ -454,11 +457,13 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             answer = str(data.get("confirm") or "")
             restore = None
             replaced = False
-            if existing is not None and repeat_tap(request, slot, status, existing):
+            tap = repeat_tap(request, slot, status, existing) if existing is not None else None
+            if existing is not None and tap is not None:
                 # This device's double tap. The browser shows this second response, so it reads exactly like the
-                # first one did, and nothing changes.
+                # first one did (its Undo too), and nothing changes.
                 log_id = existing["id"]
                 taken_at = schedule.parse_local(existing["taken_at"]) or taken_at
+                replaced, restore = bool(tap[6]), tap[7]
             elif existing is not None and (answer == "1" or (
                     answer == "replace" and data.get("replace_id") == str(existing["id"])
                     and data.get("replace_seen") == store.dose_stamp(existing))):
@@ -501,7 +506,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 log_id = store.log_slot(conn, plan_row, slot.key, status, taken_at, slot.dose or None, by=my_id)
             row = store.dose_log(conn, log_id)
             if row is not None:
-                remember_tap(request, plan_row["id"], slot.key, status, log_id, store.dose_stamp(row))
+                remember_tap(request, plan_row["id"], slot.key, status, log_id, store.dose_stamp(row), replaced, restore)
             name = med["name"] if med else "Dose"
             if status == "taken":
                 text = f"{name} marked {'given' if plan_row['kind'] == 'clinic' else 'taken'} at {schedule.fmt_time(taken_at)}."

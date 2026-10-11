@@ -573,7 +573,7 @@ def _index(conn: sqlite3.Connection) -> _Index:
     idx = _build_index(conn)
     with _MEMO_LOCK:
         _MEMO[id(conn)] = (conn, stamp, idx)
-        while len(_MEMO) > 8:
+        while len(_MEMO) > 4:
             _MEMO.pop(next(iter(_MEMO)))
     return idx
 
