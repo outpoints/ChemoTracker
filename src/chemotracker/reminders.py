@@ -71,11 +71,13 @@ def _slots_on(conn: sqlite3.Connection, d) -> list[schedule.Slot]:
 
 
 def _recent_note(conn: sqlite3.Connection, group: list[schedule.Slot], now: datetime, names: bool) -> str:
-    """A line about a dose of the same medicine logged shortly before, which isn't counted for this dose (a dose
-    logged a little early from "Log a dose" on a day it's also allowed as needed, for example)."""
+    """A line about a dose of the same medicine logged earlier that day (or within its label gap), which isn't
+    counted for this dose: given early from "Log a dose", or on a day it's also allowed as needed. The phone must
+    not read like nothing was given."""
     lines = []
     for s in group:
-        window = timedelta(hours=s.plan["med_gap"]) if s.plan["med_gap"] else timedelta(hours=2)
+        window = max(timedelta(hours=s.plan["med_gap"] or 0), timedelta(hours=2),
+                     min(timedelta(hours=12), s.dt - datetime.combine(s.dt.date(), time(0, 0))))
         row = conn.execute(
             """SELECT id, taken_at FROM dose_logs WHERE medication_id = ? AND status = 'taken' AND taken_at <= ?
                 AND taken_at >= ? ORDER BY taken_at DESC""",

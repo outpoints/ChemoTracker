@@ -237,3 +237,25 @@ def test_a_white_cell_booster_within_24_hours_after_chemo_asks_first(client, cfg
         store.log_dose(conn, her, datetime.combine(d3, datetime.min.time()).replace(hour=13), None, None)
         med = store.medication(conn, fil["medication_id"])
         assert schedule.booster_warning(conn, med, datetime.combine(d3, datetime.min.time()).replace(hour=15)) is None
+
+
+def test_took_one_stays_an_as_needed_dose_after_its_plan_changes_or_is_deleted(client, cfg):
+    # The clinic switches Prochlorperazine to a scheduled 8 PM dose. A pill taken as needed at 9 PM that day (after
+    # the new dose time, so timing alone can't tell them apart) must never count as the scheduled 8 PM dose.
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    y = today(cfg) - timedelta(days=1)
+    with session(cfg.db_path) as conn:
+        prn = _plan(conn, "Prochlorperazine", "as_needed")
+    r = client.post("/dose/quick", data={"medication_id": prn["medication_id"], "plan_id": prn["id"],
+                                         "taken_at": f"{y.isoformat()}T21:00", "back": "/"}, follow_redirects=False)
+    assert r.status_code == 303
+    r = client.post(f"/medicines/{prn['medication_id']}/plans", data={"kind": "scheduled", "start_day": "2",
+                                                                       "end_day": "6", "times": "20:00",
+                                                                       "from_cycle": "1"}, follow_redirects=False)
+    assert r.status_code == 303
+    client.post(f"/plans/{prn['id']}/delete", follow_redirects=False)  # the as-needed schedule is removed
+    with session(cfg.db_path) as conn:
+        evening = _slots(conn, cfg, y, "Prochlorperazine")
+        assert [s.time for s in evening] == ["20:00"] and evening[0].log is None
+        extras = schedule.extra_doses(conn, None, y)
+    assert any(x["medication_id"] == prn["medication_id"] and x["taken_at"].endswith("21:00") for x in extras)

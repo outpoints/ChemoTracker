@@ -388,7 +388,7 @@ def is_took_one(log: sqlite3.Row) -> bool:
     return not log["slot"] and log["plan_id"] is not None and log["kind"] == "as_needed"
 
 
-def _pair_logs(slots: list[Slot], logs: list[sqlite3.Row], prn_covers) -> dict[int, Slot]:
+def _pair_logs(slots: list[Slot], logs: list[sqlite3.Row], prn_covers, took_one: frozenset[int] = frozenset()) -> dict[int, Slot]:
     """Attach each logged dose to its planned slot. Returns {log id: slot}. One log fills at most one slot.
 
     A dose is tied to its slot by plan and planned time. A dose logged for a planned dose keeps counting when the
@@ -429,7 +429,7 @@ def _pair_logs(slots: list[Slot], logs: list[sqlite3.Row], prn_covers) -> dict[i
                 gap = abs(real_diff(at, s.dt).total_seconds()) if (at is not None and s.time) else 0.0
                 pairs.append(((0, 0 if log["plan_id"] == s.plan["id"] else 1, gap, log["id"]), log, s))
             continue
-        if is_took_one(log) or at is None:
+        if is_took_one(log) or log["id"] in took_one or at is None:
             continue
         if prn_covers(mid, at.date()):
             continue  # may be the as-needed dose: don't guess
@@ -464,6 +464,7 @@ class _Index:
     logs: list[sqlite3.Row]
     paired: dict[int, Slot]
     prn: dict[int, list[tuple[date, date | None, sqlite3.Row]]]  # medicine -> as-needed date ranges
+    took_one: frozenset[int] = frozenset()  # "Took one" doses whose as-needed plan was deleted since
 
     def prn_covers(self, medication_id: int, d: date) -> bool:
         return self.prn_plan(medication_id, d) is not None
@@ -497,6 +498,27 @@ def _stopped_at(conn: sqlite3.Connection, plans: list[sqlite3.Row]) -> dict[int,
     return out
 
 
+def _took_one_ids(conn: sqlite3.Connection, logs: list[sqlite3.Row]) -> frozenset[int]:
+    """Doses that came from "Took one" but lost their plan (deleting a plan clears the dose's plan_id). The change
+    history still has how each was created, so they stay as-needed doses and never fill a planned dose."""
+    free = [str(log["id"]) for log in logs if not log["slot"] and log["plan_id"] is None and log["kind"] == "as_needed"]
+    out: set[int] = set()
+    for i in range(0, len(free), 500):
+        chunk = free[i:i + 500]
+        latest: dict[str, str | None] = {}
+        for row in conn.execute(f"""SELECT ref, after FROM history WHERE entity = 'dose' AND action = 'created'
+                                       AND ref IN ({",".join("?" * len(chunk))}) ORDER BY id""", chunk):
+            latest[row["ref"]] = row["after"]
+        for ref, after in latest.items():
+            try:
+                snap = json.loads(after or "{}")
+            except ValueError:
+                continue
+            if snap.get("plan_id") is not None and not snap.get("slot") and snap.get("kind") == "as_needed":
+                out.add(int(ref))
+    return frozenset(out)
+
+
 def _build_index(conn: sqlite3.Connection) -> _Index:
     cycles = all_cycles(conn)
     plans = conn.execute(ALL_PLANS_SQL).fetchall()
@@ -528,10 +550,11 @@ def _build_index(conn: sqlite3.Connection) -> _Index:
     slots = sorted(found.values(), key=lambda s: (s.date, s.kind != "clinic", s.time or "", s.plan["med_name"],
                                                   s.plan["id"]))
     logs = conn.execute(LOG_SQL).fetchall()
-    idx = _Index(cycles=cycles, slots=slots, by_key=found, by_date={}, logs=logs, paired={}, prn=prn)
+    idx = _Index(cycles=cycles, slots=slots, by_key=found, by_date={}, logs=logs, paired={}, prn=prn,
+                 took_one=_took_one_ids(conn, logs))
     for s in slots:
         idx.by_date.setdefault(s.date, []).append(s)
-    idx.paired = _pair_logs(slots, logs, idx.prn_covers)
+    idx.paired = _pair_logs(slots, logs, idx.prn_covers, idx.took_one)
     return idx
 
 
@@ -596,7 +619,7 @@ def extra_doses(conn: sqlite3.Connection, cycle: sqlite3.Row | None, d: date) ->
             mid = log["medication_id"]
             if not log["slot"] and log["med_active"] and idx.prn_covers(mid, d):
                 continue  # the as-needed shelf shows it
-            if is_took_one(log):
+            if is_took_one(log) or log["id"] in idx.took_one:
                 note = ""
             else:
                 note = ("More than planned. Check it isn't the same dose logged twice." if mid in planned_today
@@ -1005,7 +1028,7 @@ def as_needed_for_day(conn: sqlite3.Connection, cycle: sqlite3.Row | None, d: da
         if d < now.date():
             an.day_doses = [log for log in idx.logs if log["medication_id"] == mid and log["status"] == "taken"
                             and log["taken_at"] and log["taken_at"][:10] == d.isoformat()
-                            and log["id"] not in idx.paired]
+                            and log["id"] not in idx.paired and not log["slot"]]
         out.append(an)
     out.sort(key=lambda a: a.name)
     return out
