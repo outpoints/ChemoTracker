@@ -6,7 +6,7 @@
   <div class="page-head" style="margin: 0">
     <div>
       <h1>Restore {{ fmt_day(file.taken.date()) }}, {{ fmt_time(file.taken) }}?</h1>
-      <p class="sub">{{ file.kind }}</p>
+      <p class="sub">{{ file.kind }}{% if file.kind == "Uploaded" %}, dated by the newest entry in it{% endif %}</p>
     </div>
   </div>
   {% if not info.ok %}
@@ -15,8 +15,34 @@
   {% else %}
   <div class="callout callout-warn">{{ icon("triangle-alert") }}
     <div class="grow"><h2 class="callout-title">Everything goes back to how it was then</h2>
-      <p>Anything logged after {{ fmt_time(file.taken) }} on {{ fmt_day(file.taken.date()) }} won't show any more. Before restoring, the app saves what's here now, so you can switch back from Settings.</p></div>
+      <p>Anything logged after {{ fmt_time(file.taken) }} on {{ fmt_day(file.taken.date()) }} won't show any more. Before restoring, the app saves what's here now, so you can switch back from Settings. Regular backups never clear that copy.</p></div>
   </div>
+  {% macro entries(lines, heading, why) %}
+  {% if lines %}
+  <div class="stack-sm">
+    <h3>{{ heading }} ({{ lines | length }})</h3>
+    <p class="meta">{{ why }}</p>
+    <ul>{% for line in lines[:12] %}<li>{{ line }}</li>{% endfor %}</ul>
+    {% if lines | length > 12 %}<p class="meta">And {{ lines | length - 12 }} more.</p>{% endif %}
+  </div>
+  {% endif %}
+  {% endmacro %}
+  <section class="card card-pad stack" aria-labelledby="rs-what">
+    <h2 id="rs-what">What restoring it changes</h2>
+    {% if changes.empty %}
+    <p>Nothing was logged, changed or deleted since this backup.</p>
+    {% else %}
+    {{ entries(changes.lost, "Gone after the restore", "Logged since this backup. If these happened, log them again afterwards.") }}
+    {{ entries(changes.set_back, "Back to how they were", "Changed since this backup. The changes are undone.") }}
+    {{ entries(changes.returning, "Back in the record", "Deleted since this backup. They come back.") }}
+    {% if changes.other %}
+    <div class="stack-sm">
+      <h3>Also</h3>
+      <ul>{% for line in changes.other %}<li>{{ line }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+    {% endif %}
+  </section>
   <div class="card card-pad">
     <table class="compare">
       <thead><tr><th></th><th>In this backup</th><th>Now</th></tr></thead>
@@ -32,8 +58,8 @@
   <form method="post" action="/settings/restore">
     <input type="hidden" name="file" value="{{ file.name }}">
     <div class="field-row">
-      <a class="btn btn-secondary btn-lg" href="/settings#backups">Keep things as they are</a>
-      <button class="btn btn-primary btn-lg" type="submit">{{ icon("archive-restore") }}Restore this backup</button>
+      <a class="btn btn-primary btn-lg" href="/settings#backups">Keep things as they are</a>
+      <button class="btn btn-secondary btn-lg" type="submit">{{ icon("archive-restore") }}Restore this backup</button>
     </div>
   </form>
   {% endif %}

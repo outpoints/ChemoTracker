@@ -1112,7 +1112,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         return render(request, "settings.html", active="settings", history=backup_log, files=files, cfg=cfg,
                       next_backup=scheduler.next_at or backup.next_run(cfg, now()), changes=changes,
                       nudger=nudger, suggested_topic=draft or reminders.new_topic(), roles=profiles.ROLES,
-                      suggested_url=str(request.base_url).rstrip("/"))
+                      suggested_url=str(request.base_url).rstrip("/"), keep_special=backup.KEEP_SPECIAL)
 
     # ------------------------------------------------------------ reminders
 
@@ -1154,7 +1154,10 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         with db() as conn:
             current = {t: conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0] for t, tbl in
                        (("doses", "dose_logs"), ("symptoms", "symptom_logs"), ("medicines", "medications"), ("cycles", "cycles"))}
-        return render(request, "restore.html", active="settings", file=backup.describe(path), info=info, current=current)
+            # Counts can match while different entries go and come back, so name every one of them.
+            changes = backup.compare(conn, path) if info["ok"] else backup.Changes()
+        return render(request, "restore.html", active="settings", file=backup.describe(path, cfg.tz), info=info,
+                      current=current, changes=changes, keep_special=backup.KEEP_SPECIAL)
 
     @app.post("/settings/restore")
     async def restore_now(request: Request):
@@ -1165,10 +1168,11 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         except backup.RestoreError as exc:
             return go("/settings#backups", str(exc), request)
         app.state.db_health = quick_check(cfg.db_path)
-        when = backup.describe(path)
+        when = backup.describe(path, cfg.tz)
         label = f"{schedule.fmt_day(when.taken.date())} {schedule.fmt_time(when.taken)}" if when else path.name
         return go("/", f"Restored the backup from {label}. What was here before is saved as "
-                       f"\"{safety.name}\" in Settings, so you can switch back.", request)
+                       f"\"{safety.name}\" in Settings, so you can switch back. Regular backups never clear it. "
+                       f"The app keeps the last {backup.KEEP_SPECIAL} copies saved before a restore.", request)
 
     @app.post("/settings/restore/upload")
     async def restore_upload(request: Request):

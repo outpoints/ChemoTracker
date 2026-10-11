@@ -104,6 +104,9 @@ def test_v5_upgrade_changes_nothing_if_a_table_holds_something_unexpected(tmp_pa
     assert _dump(path)[0] == rows, "a failed upgrade must leave the record exactly as it was"
 
 
+# ---------------------------------------------------------------- typed text in the clinic's files
+
+
 def test_formula_like_text_is_plain_text_on_every_sheet_and_in_both_csvs(client, cfg):
     setup_walkthrough(client, today(cfg) - timedelta(days=2))
     y = today(cfg) - timedelta(days=1)
@@ -135,23 +138,12 @@ def test_formula_like_text_is_plain_text_on_every_sheet_and_in_both_csvs(client,
     assert any(row[doses[0].index("Day")] == "2" for row in doses[1:])
 
 
+# ---------------------------------------------------------------- put back
+
+
 def _plan(conn, name):
     return conn.execute("SELECT p.* FROM plans p JOIN medications m ON m.id = p.medication_id WHERE m.name = ?",
                         (name,)).fetchone()
-
-
-def test_put_back_names_a_deleted_medicines_doses_by_their_own_name_in_the_report(client, cfg):
-    setup_walkthrough(client, today(cfg) - timedelta(days=2))
-    y = today(cfg) - timedelta(days=1)
-    with session(cfg.db_path) as conn:
-        fil = _plan(conn, "Filgrastim")
-    client.post("/slot", data={"plan_id": fil["id"], "slot": f"{y} 15:00", "status": "taken", "taken_at": f"{y}T15:05",
-                               "back": "/"})
-    r = client.post(f"/medicines/{fil['medication_id']}/delete", follow_redirects=True)
-    assert "1 dose in the record" in html.unescape(r.text)
-    with session(cfg.db_path) as conn:
-        rows = export.dose_rows(conn, y, y, local_now(cfg))
-    assert [r.status for r in rows if r.medicine.startswith("Filgrastim")] == ["Taken"]
 
 
 def test_put_back_after_a_time_change_asks_first_with_leave_it_as_it_is_primary(client, cfg):
@@ -180,3 +172,75 @@ def test_put_back_after_a_time_change_asks_first_with_leave_it_as_it_is_primary(
         assert conn.execute("SELECT COUNT(*) FROM dose_logs WHERE medication_id = ?", (dex["medication_id"],)).fetchone()[0] == 1
     r = client.post(f"/history/{event}/put-back", data={"back": "/history", "confirm": "1"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/dose/{first}"
+
+
+def test_put_back_names_a_deleted_medicines_doses_by_their_own_name_in_the_report(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    y = today(cfg) - timedelta(days=1)
+    with session(cfg.db_path) as conn:
+        fil = _plan(conn, "Filgrastim")
+    client.post("/slot", data={"plan_id": fil["id"], "slot": f"{y} 15:00", "status": "taken", "taken_at": f"{y}T15:05",
+                               "back": "/"})
+    r = client.post(f"/medicines/{fil['medication_id']}/delete", follow_redirects=True)
+    assert "1 dose in the record" in html.unescape(r.text)
+    with session(cfg.db_path) as conn:
+        rows = export.dose_rows(conn, y, y, local_now(cfg))
+    assert [r.status for r in rows if r.medicine.startswith("Filgrastim")] == ["Taken"]
+
+
+# ---------------------------------------------------------------- restore
+
+
+def test_restore_page_names_what_goes_and_comes_back_and_keeping_things_is_primary(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    y = today(cfg) - timedelta(days=1)
+    with session(cfg.db_path) as conn:
+        dex, olz = _plan(conn, "Dexamethasone"), _plan(conn, "Olanzapine")
+    client.post("/slot", data={"plan_id": dex["id"], "slot": f"{y} 08:00", "status": "taken", "taken_at": f"{y}T08:05",
+                               "back": "/"})
+    saved = backup.run_backup(cfg, "manual")
+    with session(cfg.db_path) as conn:
+        a = conn.execute("SELECT id FROM dose_logs WHERE plan_id = ?", (dex["id"],)).fetchone()["id"]
+    client.post(f"/dose/{a}/delete", data={"back": "/"})
+    client.post("/slot", data={"plan_id": olz["id"], "slot": f"{y} 21:00", "status": "taken", "taken_at": f"{y}T21:05",
+                               "back": "/"})
+    with session(cfg.db_path, write=True) as conn:
+        store.add_from_catalog(conn, "pegfilgrastim")
+    client.get("/settings")
+    page = html.unescape(re.sub(r"<[^>]+>", " ", client.get(f"/settings/restore?file={saved.path.name}").text))
+    lost = page.split("Gone after the restore")[1].split("Back in the record")[0]
+    assert "Olanzapine, taken" in lost and "9:05 PM" in lost
+    assert "Dexamethasone, taken" in page.split("Back in the record")[1]
+    raw = client.get(f"/settings/restore?file={saved.path.name}").text
+    assert re.search(r'class="btn btn-primary btn-lg" href="/settings#backups">Keep things as they are', raw)
+    assert 'class="btn btn-secondary btn-lg" type="submit"' in raw
+    assert "Medicines added since then are removed: Pegfilgrastim." in page
+
+
+def test_safety_copies_and_uploads_are_kept_apart_from_the_rotation(tmp_path):
+    folder = tmp_path / "backups"
+    folder.mkdir()
+    names = [f"chemotracker-20260101-0{h}0000.sqlite3" for h in range(1, 6)]
+    names += ["chemotracker-20260101-010000-before-restore.sqlite3", "chemotracker-20260101-010000-before-upgrade-v4.sqlite3",
+              "chemotracker-20260101-010000-uploaded.sqlite3", "chemotracker-20260101-050000-2.sqlite3"]
+    names += [f"chemotracker-20251201-0{h}0000-before-restore.sqlite3" for h in range(0, backup.KEEP_SPECIAL)]
+    for n in names:
+        (folder / n).write_bytes(b"x")
+    backup.prune(folder, 2)
+    left = {p.name for p in folder.iterdir()}
+    # The two newest regular ones (the -2 copy came after the plain one in the same second).
+    assert {"chemotracker-20260101-050000-2.sqlite3", "chemotracker-20260101-050000.sqlite3"} <= left
+    assert "chemotracker-20260101-040000.sqlite3" not in left
+    assert {"chemotracker-20260101-010000-before-restore.sqlite3", "chemotracker-20260101-010000-before-upgrade-v4.sqlite3",
+            "chemotracker-20260101-010000-uploaded.sqlite3"} <= left
+    assert len([n for n in left if "before-restore" in n]) == backup.KEEP_SPECIAL
+
+
+def test_restore_keeps_reminders_that_already_went_out(client, cfg):
+    setup_walkthrough(client, today(cfg) - timedelta(days=2))
+    saved = backup.run_backup(cfg, "manual")
+    with session(cfg.db_path, write=True) as conn:
+        conn.execute("INSERT INTO reminders_sent (key, sent_at) VALUES ('due|2026-01-02 08:00', ?)", (T0,))
+    backup.restore(cfg, saved.path, None)
+    with session(cfg.db_path) as conn:
+        assert conn.execute("SELECT key FROM reminders_sent").fetchall()[0]["key"] == "due|2026-01-02 08:00"
