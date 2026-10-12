@@ -31,13 +31,13 @@ Pharmacies print some names in mixed case, called "tall man" letters (`dexAMETHa
 
 | Part | Examples |
 |---|---|
-| Dose | `Take one tablet`, `2 tablets`, `1-2 tablets`, `½ tablet`, `8 mg` |
+| Dose | `Take one tablet`, `2 tablets`, `1-2 tablets`, `½ tablet`, `.5 tablet`, `8 mg` |
 | Route | `by mouth`, `PO`, `under the skin`, `SUBQ`, `IV`, `on the tongue`, `apply` |
 | How often | `daily`, `twice daily`, `BID`, `TID`, `QID`, `3 times a day`, `8 times a day`, `every 8 hours`, `q6h`, `every 4 to 6 hours`, `around the clock` |
 | When | `at bedtime`, `QHS`, `in the morning`, `with meals`, `at 9 PM` |
 | As needed | `as needed`, `PRN`, `if needed`, `after each loose stool`, plus what for (`for nausea or vomiting`, `n/v`) |
 | Limit | `do not exceed 8 tablets in 24 hours`, `no more than 4 a day`, `not more than 3 tablets a day`, `do not exceed 3000 mg per day` |
-| Duration | `for 3 days`, `x 3 to 4 days`, `x 4 doses` |
+| Duration | `for 3 days`, `x 3 to 4 days`, `x 4 doses`, `do not use for more than 3 days` |
 | Steps | `then` (tapers like `4 mg the evening of chemo, then twice daily for 3 days`), `then stop`, and `and` between chemo-day phrases (`2 tablets the night before and 2 tablets the morning of chemo`) |
 
 ## How chemo schedules are written
@@ -96,6 +96,9 @@ The reader never guesses silently. Each guess shows a note and a "guess" tag:
 - **A dose unit that can't match the strength** (`8 mcg` of an 8 mg tablet): the dose is left empty with a note. Units are never changed.
 - **Pegfilgrastim on-body injector** (Neulasta Onpro): the clinic puts it on and it gives the dose by itself about 27 hours later. There's nothing to take out of the fridge at home.
 - **Ranges** (`every 4 to 6 hours`, `x 3 to 4 days`): uses the shorter gap and the longer number of days, and says so.
+- **A day limit** (`Do not use for more than 3 days`, `for no more than 3 days`): counted like `for 3 days` from the first day, and the note quotes it. When the label doesn't say which day to start, the first day is the usual one from the built-in list (or chemo day) and a note says so. The limit never sets the start day.
+- **A number with no 0 before the point** (`.5 mg`, `.5 tablet`): read as 0.5, the way ISMP says it's meant. Writing 0.5 is safer, because `.5` is easy to misread as 5.
+- **A time after midnight** (`at 12:30 AM on days 2, 3 and 4`): a planned time belongs to the start of its day, so 12:30 AM on Day 2 is the night between Day 1 and Day 2. The note says which night it means, and which days to pick if the label meant the night after. Premedication like `12 and 6 hours before chemo` (3 AM on Day 1) relies on this.
 - **Not in the built-in list:** added as your own medicine under the name you typed.
 
 Bottle labels also carry the patient's name, address, Rx number, pharmacy, prescriber, quantity, refills and NDC. Those lines are dropped before reading, and the pasted text is never stored. Only the medicine details are saved.
