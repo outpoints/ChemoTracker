@@ -289,9 +289,6 @@ def test_stopping_a_medicine_hides_its_missed_and_taken_doses_from_the_report(cl
     assert any(g.name == "Dexamethasone" for g in grid_rows), "the cycle sheet dropped Dexamethasone and its taken dose"
 
 
-@pytest.mark.xfail(strict=True, reason="integrity F15: the cycle sheet part is fixed in schedule.grid (also covered by "
-                   "test_audit_schedule F5); export.dose_rows still takes Cycle/Day from the taken time "
-                   "(export.py, owned by another fixer)")
 def test_bedtime_dose_taken_after_midnight_leaves_its_planned_day_blank_on_the_cycle_sheet(client, cfg):
     """Day 4's 9 PM Olanzapine, taken at 12:30 AM: the cycle sheet shows Day 4 blank and a dose on Day 5.
 
@@ -435,10 +432,6 @@ def test_reader_drops_the_as_needed_step_after_then():
     assert later, f"plans={[(p.kind, p.start_day, p.end_day) for p in m.plans]} notes={m.notes}"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "F11: the reader now marks an on-body injector no_prep (brand Neulasta Onpro, plan label, note), but "
-    "store.import_parsed copies the catalog syringe prep and only writes prep when the label set one. "
-    "Needs store.py: clear prep_minutes/prep_note when med.no_prep."))
 def test_on_body_injector_keeps_the_catalog_fridge_reminder(cfg):
     """An on-body injector label saves as a home shot on Day 2 with 'Take it out of the fridge' 30 min before.
 

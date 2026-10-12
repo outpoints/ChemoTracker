@@ -373,6 +373,7 @@ def _check_dose(conn: sqlite3.Connection, data: dict, confirm: bool, by: int | N
     when = schedule.parse_local(data.get("taken_at")) or (slot.dt if slot is not None else None)
     if when is None:
         return
-    warning = schedule.dose_warning(conn, med, when, by=by, slot=slot, now=now)
+    # Only the double-dose checks: the dose was already given, so whether that day was a planned day isn't the question.
+    warning = schedule.dose_warning(conn, med, when, by=by, slot=slot, now=now, unplanned_ok=True)
     if warning:
         raise CheckFirst(warning, med, when)

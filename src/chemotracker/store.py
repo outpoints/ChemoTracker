@@ -382,6 +382,9 @@ def import_parsed(conn: sqlite3.Connection, med, cycles: tuple[int, int | None] 
               "min_hours_between": med.min_hours_between, "max_per_day": med.max_per_day, "route": med.route}
     if med.prep_minutes:
         values["prep_minutes"], values["prep_note"] = str(med.prep_minutes), med.prep_note
+    elif getattr(med, "no_prep", False):
+        # An on-body injector: the catalog's syringe has a fridge step, but this one is put on at the clinic.
+        values["prep_minutes"], values["prep_note"] = None, None
     if med.brand:
         values["brand"] = med.brand
     update_medication(conn, med_id, values)

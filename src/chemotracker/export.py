@@ -88,15 +88,23 @@ def dose_rows(conn: sqlite3.Connection, start: date, end: date, now: datetime) -
     cache: dict = {}
     people = profiles.by_id(conn)
     rows: list[DoseRow] = []
-    for r in store.doses_between(conn, start, end):
+    # A day either side, so a bedtime dose taken after midnight still lands on the day it was planned for.
+    for r in store.doses_between(conn, start - timedelta(days=1), end + timedelta(days=1)):
         when = schedule.parse_local(r["taken_at"])
         planned = schedule.parse_local(r["slot"]) if r["slot"] and len(r["slot"]) > 10 else None
         ref = (when or planned or datetime.fromisoformat(r["slot"])).date()
-        cyc, day = _cycle_day(conn, ref, cache)
+        paired = schedule.paired_slot(conn, r["id"])
+        if paired is not None:
+            # File it under the planned dose it counts for, the same way Today and the cycle sheet do.
+            ref, cyc, day, kind = paired.date, paired.cycle["number"], paired.day, paired.kind
+        else:
+            (cyc, day), kind = _cycle_day(conn, ref, cache), r["kind"]
+        if not (start <= ref <= end):
+            continue
         rows.append(DoseRow(
             when=when or planned or datetime.combine(ref, datetime.min.time()),
             planned=planned, cycle=cyc, day=day, medicine=_med_name(r["med_name"], r["med_brand"]),
-            strength=r["med_strength"] or "", dose=r["dose"] or r["med_dose"] or "", kind=KIND_SHORT.get(r["kind"], r["kind"]),
+            strength=r["med_strength"] or "", dose=r["dose"] or r["med_dose"] or "", kind=KIND_SHORT.get(kind, kind),
             status=STATUS_TEXT[r["status"]], reason=r["reason"] or "", helped=store.HELPED.get(r["helped"] or "", ""),
             dose_feel=store.DOSE_FEEL.get(r["dose_feel"] or "", ""), side_effects=r["side_effects"] or "",
             notes=r["notes"] or "", by=profiles.attribution(people, r["logged_by"], r["updated_by"]),
