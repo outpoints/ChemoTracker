@@ -400,8 +400,10 @@ def _pair_logs(slots: list[Slot], logs: list[sqlite3.Row], prn_covers, took_one:
     already due when it was taken: a late morning dose fills the morning, never the evening. A dose taken in the
     small hours can be last night's evening dose, and one taken just before midnight can be a dose planned for just
     after it. It fills a dose that wasn't due yet only when it was given at most EARLY_PAIR ahead and no due dose of
-    that medicine was open. It never fills a clinic dose, and on a day the medicine is also allowed as needed it is
-    left alone, because it may be the as-needed one. "Took one" doses never fill a planned dose.
+    that medicine was open. It never fills a clinic dose. When the medicine is allowed as needed both on the day it
+    was taken and on the planned dose's day, it is left alone, because it may be the as-needed one. So a dose given
+    at 12:30 AM on an as-needed day still fills last night's bedtime dose when last night wasn't an as-needed day
+    (and the other way round). "Took one" doses never fill a planned dose.
     """
     paired: dict[int, Slot] = {}
     by_key = {(s.plan["id"], s.key): s for s in slots}
@@ -431,9 +433,10 @@ def _pair_logs(slots: list[Slot], logs: list[sqlite3.Row], prn_covers, took_one:
             continue
         if is_took_one(log) or log["id"] in took_one or at is None:
             continue
-        if prn_covers(mid, at.date()):
-            continue  # may be the as-needed dose: don't guess
+        taken_prn = prn_covers(mid, at.date())  # allowed as needed when it was taken
         for d in (at.date() - timedelta(days=1), at.date(), at.date() + timedelta(days=1)):
+            if taken_prn and prn_covers(mid, d):
+                continue  # may be the as-needed dose: don't guess
             for s in open_slots.get((mid, d), []):
                 if s.kind == "clinic" or not s.time:
                     continue  # a dose given at home never fills a clinic dose
@@ -799,7 +802,8 @@ def early_dose_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetim
     limit = timedelta(hours=gap) if gap else RECENT_DUPLICATE
     window = limit + timedelta(hours=2)  # wall-clock search; the real gap is checked below
     near = conn.execute(
-        """SELECT dl.taken_at, dl.logged_by, p.name AS who FROM dose_logs dl LEFT JOIN profiles p ON p.id = dl.logged_by
+        """SELECT dl.taken_at, dl.logged_by, dl.updated_by, p.name AS who FROM dose_logs dl
+                  LEFT JOIN profiles p ON p.id = COALESCE(dl.updated_by, dl.logged_by)
             WHERE dl.medication_id = ? AND dl.status = 'taken' AND dl.taken_at > ? AND dl.taken_at < ? AND dl.id != ?
             ORDER BY abs(julianday(dl.taken_at) - julianday(?)) LIMIT 1""",
         (med["id"], fmt_local(when - window), fmt_local(when + window), exclude_id or -1, fmt_local(when)),
@@ -809,7 +813,7 @@ def early_dose_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetim
         assert other is not None
         apart = _apart(when, other)
         if apart < limit:
-            if by is not None and near["logged_by"] == by:
+            if by is not None and (near["updated_by"] or near["logged_by"]) == by:  # whoever saved it last
                 who = "You logged"
             elif near["who"]:
                 who = f"{near['who']} logged"
@@ -1112,6 +1116,38 @@ class Compartment:
         return {"done": "Done", "due": "Due now", "late": "Late", "upcoming": "Planned"}.get(st, "Missed")
 
 
+# A dose of the same medicine this close to a planned dose (or within the label's gap) is shown on its row.
+NEAR_DOSE = timedelta(hours=2)
+
+
+def took_note(idx: _Index, slot: Slot, now: datetime) -> str:
+    """'Took one at 7:30 AM. Check before giving this one.' for a planned home dose not logged yet, when a dose of
+    the same medicine that fills no planned dose (a "Took one" from the as-needed shelf, or a "Log a dose" on a day
+    it's also allowed as needed) was taken within the label's gap of it, or within NEAR_DOSE when there's no gap.
+    The row stays as it is, with this line, and Taken still warns. '' when there's nothing to say."""
+    if slot.log is not None or slot.kind != "scheduled" or slot.date > now.date():
+        return ""
+    window = max(timedelta(hours=slot.plan["med_gap"] or 0), NEAR_DOSE)
+    latest: datetime | None = None
+    for log in idx.logs:
+        if log["medication_id"] != slot.plan["medication_id"] or log["status"] != "taken" or log["id"] in idx.paired:
+            continue
+        taken = parse_local(log["taken_at"])
+        if taken is None or taken > now + AHEAD_OK or _apart(taken, slot.dt) >= window:
+            continue
+        if latest is None or taken > latest:
+            latest = taken
+    if latest is None:
+        return ""
+    if latest.date() in (slot.date, now.date()):
+        day = ""
+    elif (now.date() - latest.date()).days == 1:
+        day = "yesterday "
+    else:
+        day = f"on {fmt_day(latest.date())} "
+    return f"Took one {day}at {fmt_time(latest)}. Check before giving this one."
+
+
 @dataclass
 class DayPlan:
     cycle: sqlite3.Row | None
@@ -1120,6 +1156,11 @@ class DayPlan:
     clinic: list[Slot]
     compartments: list[Compartment]
     as_needed: list[AsNeeded]
+    idx: _Index | None = field(default=None, repr=False, compare=False)
+
+    def took_note(self, slot: Slot, now: datetime) -> str:
+        """See took_note. Works for any day's slot (Today's "From last night" rows too): it reads no database."""
+        return took_note(self.idx, slot, now) if self.idx is not None else ""
 
     @property
     def scheduled(self) -> list[Slot]:
@@ -1172,6 +1213,7 @@ def day_plan(conn: sqlite3.Connection, d: date, now: datetime) -> DayPlan:
         clinic=[s for s in day_slots if s.kind == "clinic"],
         compartments=[Compartment(k, PERIOD_NAMES[k], v) for k, v in groups.items() if v],
         as_needed=as_needed_for_day(conn, cycle, d, now),
+        idx=_index(conn),
     )
 
 
