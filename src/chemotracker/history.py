@@ -29,7 +29,8 @@ LABELS = {
                 "logged_at": "Time"},
     "medication": {"name": "Name", "brand": "Brand", "strength": "Strength", "dose": "Dose", "directions": "Label",
                    "route": "How it goes in", "min_hours_between": "Hours between doses", "max_per_day": "Most a day",
-                   "notes": "Notes", "active": "On the list", "category": "Group", "info_key": "Catalog entry"},
+                   "notes": "Notes", "active": "On the list", "category": "Group", "info_key": "Catalog entry",
+                   "archived_at": "Archived"},
     "plan": {"kind": "Kind", "start_day": "From day", "end_day": "To day", "times": "Times", "label": "When",
              "from_cycle": "From cycle", "to_cycle": "To cycle", "dose": "Dose", "medication_id": "Medicine"},
     "cycle": {"number": "Number", "day1": "Chemo day (Day 1)", "length_days": "Days", "regimen": "Regimen",
@@ -103,7 +104,7 @@ def _value(entity: str, key: str, value, names: "_Names", at: int | None = None)
             return sx.lookup(value).name if sx.lookup(value) else value
         if key == "logged_at":
             return _fmt_time(value)
-    if key == "active":
+    if key in ("active", "archived_at"):
         return "Yes" if value else "No"
     if isinstance(value, float):
         return f"{value:g}"

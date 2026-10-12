@@ -320,6 +320,12 @@ MIGRATIONS: list[str] = [
     DROP TABLE temp.upgrade_check;
     DROP TABLE temp.fk_before;
     """,
+    # v6: Archive. A medicine with logged doses can't be deleted (the care team's report needs its doses), so it
+    # can be put away instead. An archived medicine is also stopped (active = 0). Added at the end of the table, so
+    # older code that reads columns by name still opens the database.
+    """
+    ALTER TABLE medications ADD COLUMN archived_at TEXT;
+    """,
 ]
 
 # ---------------------------------------------------------------- change history

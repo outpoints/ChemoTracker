@@ -8,7 +8,7 @@
   <div class="page-head">
     <div>
       <h1>{{ med.name }}{% if med.brand %} <span class="muted">({{ med.brand }})</span>{% endif %}</h1>
-      <p class="sub">{{ category_names.get(med.category, "Your medicine") }}{% if not med.active %} · stopped{% endif %}</p>
+      <p class="sub">{{ category_names.get(med.category, "Your medicine") }}{% if med.archived_at %} · archived{% elif not med.active %} · stopped{% endif %}</p>
     </div>
   </div>
 
@@ -165,7 +165,11 @@
       {% if events %}{{ history_card(events, "Label and schedule changes") }}{% endif %}
 
       <div class="card card-pad danger-zone stack-sm">
-        {% if med.active %}
+        {% if med.archived_at %}
+        <p class="hint">Archived. It stays off Today, reminders and your medicine lists. Its doses are still in the report.</p>
+        <form method="post" action="/medicines/{{ med.id }}/active"><input type="hidden" name="active" value="1">
+          <button class="btn btn-primary btn-block" type="submit">Start again</button></form>
+        {% elif med.active %}
         <form method="post" action="/medicines/{{ med.id }}/active"><input type="hidden" name="active" value="0">
           <button class="btn btn-secondary btn-block" type="submit">Stop this medicine</button></form>
         <p class="hint">Hides it from Today. Its history stays in the report.</p>
@@ -173,9 +177,17 @@
         <form method="post" action="/medicines/{{ med.id }}/active"><input type="hidden" name="active" value="1">
           <button class="btn btn-primary btn-block" type="submit">Start again</button></form>
         {% endif %}
+        {% if dose_count %}
+        {% if not med.archived_at %}
+        <form method="post" action="/medicines/{{ med.id }}/archive" data-confirm="Archive {{ med.name }}? It leaves Today, reminders and your medicine list. {{ 'Its logged dose stays' if dose_count == 1 else 'Its ' ~ dose_count ~ ' logged doses stay' }} in the report, the cycle sheet and Change history. You can start it again any time.">
+          <button class="btn btn-secondary btn-quieter" type="submit">{{ icon("archive") }}Archive this medicine</button>
+        </form>
+        {% endif %}
+        {% else %}
         <form method="post" action="/medicines/{{ med.id }}/delete" data-confirm="Delete {{ med.name }}? Only a medicine with no logged doses can be deleted. Its schedule goes with it.">
           <button class="btn btn-danger btn-quieter" type="submit">{{ icon("trash") }}Delete this medicine</button>
         </form>
+        {% endif %}
       </div>
     </aside>
   </div>

@@ -25,7 +25,8 @@
     </div>
     <a class="btn btn-secondary" href="/medicines/add">{{ icon("plus") }}Add a medicine</a>
   </div>
-  {% set stopped = meds | rejectattr("active") | list %}
+  {% set stopped = meds | rejectattr("active") | rejectattr("archived_at") | list %}
+  {% set archived = meds | selectattr("archived_at") | list %}
   {% if home_groups or clinic %}
   <div class="med-places">{% call(m, at_clinic) med_sections(home_groups, clinic) %}{{ med_row(m, plans[m.id], at_clinic) }}{% endcall %}</div>
   {% else %}
@@ -41,6 +42,18 @@
       {% endfor %}
     </ul>
   </div>
+  {% endif %}
+
+  {% if archived %}
+  <details class="card more archived" id="archived" {% if open_archived %}open{% endif %}>
+    <summary>Archived <span class="meta">{{ archived | length }}</span></summary>
+    <p class="hint">Off Today and your lists. Their doses stay in the report and the cycle sheet. Open one to start it again.</p>
+    <ul class="list">
+      {% for m in archived %}
+      <li><a class="list-item" href="/medicines/{{ m.id }}"><span class="grow"><span class="title is-stopped">{{ m.name }}</span>{% if m.strength %} <span class="meta">{{ m.strength }}</span>{% endif %}</span>{{ icon("chevron-right", "chev") }}</a></li>
+      {% endfor %}
+    </ul>
+  </details>
   {% endif %}
 </div>
 {% endblock %}

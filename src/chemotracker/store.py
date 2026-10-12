@@ -142,19 +142,36 @@ def update_medication(conn: sqlite3.Connection, med_id: int, values: dict) -> No
 
 
 def set_active(conn: sqlite3.Connection, med_id: int, active: bool) -> None:
-    conn.execute("UPDATE medications SET active = ?, updated_at = ? WHERE id = ?", (1 if active else 0, utcnow(), med_id))
+    """Stop a medicine, or start it again. Starting an archived medicine again also takes it out of the archive."""
+    if active:
+        conn.execute("UPDATE medications SET active = 1, archived_at = NULL, updated_at = ? WHERE id = ?",
+                     (utcnow(), med_id))
+    else:
+        conn.execute("UPDATE medications SET active = 0, updated_at = ? WHERE id = ?", (utcnow(), med_id))
+
+
+def archive_medication(conn: sqlite3.Connection, med_id: int) -> None:
+    """Put a medicine away: stopped, and off the medicine lists. Its doses, schedules and history stay as they are,
+    so the report, the cycle sheet and the double-dose checks still see them. Start again undoes it."""
+    now = utcnow()
+    conn.execute("UPDATE medications SET active = 0, archived_at = COALESCE(archived_at, ?), updated_at = ? "
+                 "WHERE id = ?", (now, now, med_id))
+
+
+def logged_dose_count(conn: sqlite3.Connection, med_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) FROM dose_logs WHERE medication_id = ?", (med_id,)).fetchone()[0]
 
 
 def delete_medication(conn: sqlite3.Connection, med_id: int) -> None:
     """Delete a medicine added by mistake. One with logged doses is refused: deleting it would take doses that
-    were given (or skipped) out of the care team's report. Stopping it keeps them."""
+    were given (or skipped) out of the care team's report. Archiving it keeps them."""
     row = conn.execute("""SELECT m.name, COUNT(dl.id) AS n FROM medications m
                             LEFT JOIN dose_logs dl ON dl.medication_id = m.id WHERE m.id = ? GROUP BY m.id""",
                        (med_id,)).fetchone()
     if row is not None and row["n"]:
         doses, them = ("1 dose", "it") if row["n"] == 1 else (f"{row['n']} doses", "them")
         raise InvalidInput(f"{row['name']} has {doses} in the record, so it can't be deleted. The care team's report "
-                           f"needs {them}. To take it off Today, use Stop this medicine. If a dose was logged by "
+                           f"needs {them}. To put it away, use Archive this medicine. If a dose was logged by "
                            "mistake, delete that dose first.")
     conn.execute("DELETE FROM medications WHERE id = ?", (med_id,))
 

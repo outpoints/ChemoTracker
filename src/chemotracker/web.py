@@ -1083,7 +1083,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     # ------------------------------------------------------------ medicines
 
     @app.get("/medicines", response_class=HTMLResponse)
-    def medicines_page(request: Request):
+    def medicines_page(request: Request, show: str | None = None):
         with db() as conn:
             meds = store.medications(conn, active=None)
             plans = {m["id"]: store.plans(conn, m["id"]) for m in meds}
@@ -1091,7 +1091,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             available = {a.medication_id: a for m in meds for a in [schedule._as_needed_row(conn, m, None, current)]}
         home_groups, clinic = _medicine_sections([m for m in meds if m["active"]], plans)
         return render(request, "medicines.html", active="medicines", meds=meds, plans=plans, available=available,
-                      home_groups=home_groups, clinic=clinic)
+                      home_groups=home_groups, clinic=clinic, open_archived=show == "archived")
 
     @app.get("/medicines/add", response_class=HTMLResponse)
     def add_medicine_page(request: Request):
@@ -1164,9 +1164,10 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             cycles = schedule.all_cycles(conn)
             length = max([c["length_days"] for c in cycles] + [14])
             events = history.for_medicine(conn, cfg.tz, med_id)
+            dose_count = store.logged_dose_count(conn, med_id)
         return render(request, "medicine.html", active="medicines", med=med, plans=plans, recent=recent,
                       info=medinfo.lookup(med["info_key"]), is_new=bool(new), edit=bool(edit), error=None, length=length,
-                      events=events)
+                      events=events, dose_count=dose_count)
 
     @app.post("/medicines/{med_id}")
     async def save_medicine(request: Request, med_id: int):
@@ -1185,6 +1186,17 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         with db() as conn:
             store.set_active(conn, med_id, active)
         return go(f"/medicines/{med_id}", "Back on the list." if active else "Stopped. History is kept.", request)
+
+    @app.post("/medicines/{med_id}/archive")
+    async def archive_medicine(request: Request, med_id: int):
+        await form(request)
+        with db() as conn:
+            med = store.medication(conn, med_id)
+            if med is None:
+                raise HTTPException(404)
+            store.archive_medication(conn, med_id)
+        return go("/medicines?show=archived#archived", f"{med['name']} is archived. Its doses stay in the report. "
+                  "You can find it under Archived at the bottom of this page.", request)
 
     @app.post("/medicines/{med_id}/delete")
     async def remove_medicine(request: Request, med_id: int):

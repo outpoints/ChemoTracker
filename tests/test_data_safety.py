@@ -67,10 +67,15 @@ def test_v5_upgrade_copies_every_row_and_ids_are_never_handed_out_twice(tmp_path
     path = tmp_path / "v4.sqlite3"
     _v4(path, monkeypatch)
     rows, columns = _dump(path)
-    assert migrate(path) == 5
+    assert migrate(path) == len(db.MIGRATIONS)
     after_rows, after_columns = _dump(path)
-    assert after_rows == rows, "the upgrade changed or lost an entry"
-    assert after_columns == columns, "v0.5.1 reads these columns by name and order; they must not change"
+    # v6 adds medications.archived_at at the end (Archive). Everything that was there stays, in the same order.
+    added = {t: after_columns[t][len(columns[t]):] for t in TABLES}
+    assert {t: [c[1] for c in cols] for t, cols in added.items() if cols} == {"medications": ["archived_at"]}
+    assert {t: [r[:len(columns[t])] for r in after_rows[t]] for t in TABLES} == rows, "the upgrade changed or lost an entry"
+    assert all(r[-1] is None for r in after_rows["medications"]), "nothing comes out of the upgrade archived"
+    assert {t: after_columns[t][:len(columns[t])] for t in TABLES} == columns, \
+        "v0.5.1 reads these columns by name and order; they must not change"
     assert db.quick_check(path) == "ok"
     with session(path, write=True) as conn:
         new_dose = db.rowid(conn.execute("INSERT INTO dose_logs (medication_id, kind, status, taken_at, created_at, "
@@ -87,7 +92,7 @@ def test_v5_upgrade_copies_every_row_and_ids_are_never_handed_out_twice(tmp_path
         conn.execute("INSERT INTO plans (medication_id, kind, start_day, created_at) VALUES (?, 'clinic', 1, ?)", (new_med, T0))
         conn.execute("DELETE FROM medications WHERE id = ?", (new_med,))
         assert not conn.execute("SELECT 1 FROM plans WHERE medication_id = ?", (new_med,)).fetchone()
-    assert migrate(path) == 5  # running it again changes nothing
+    assert migrate(path) == len(db.MIGRATIONS)  # running it again changes nothing
 
 
 def test_v5_upgrade_changes_nothing_if_a_table_holds_something_unexpected(tmp_path, monkeypatch):
