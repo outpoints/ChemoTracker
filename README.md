@@ -40,7 +40,7 @@ Screenshots use made-up demo data (`scripts/demo_seed.py`).
 - **Safety checks for tired people**: logging an as-needed dose sooner than the label allows asks first. Moving a delayed chemo day offers to move every later cycle too. Re-running setup says exactly which medicines it stopped.
 - **Several people, one record**: if two people log the same medicine within minutes, the second is asked first ("Jane logged one at 9:31 PM"). Tapping **Taken** on a dose someone else already recorded says so instead of overwriting it. Editing an entry someone else just changed shows their version first.
 - **Get it ready ahead**: medicines that need a step before the dose show it on Today and get their own reminder, for example "Take it out of the fridge at 1:00 PM" for a 1:30 PM shot. Filgrastim and pegfilgrastim syringes start at 30 minutes, as their FDA labels say. Any medicine can have one.
-- **Reminders on your phone** through the free [ntfy](https://ntfy.sh) app: when a dose is due, when one needs getting ready, when one still isn't marked after a while, and the evening before chemo. See [Reminders](#reminders).
+- **Reminders on your phone** through the free [ntfy](https://ntfy.sh) app: when a dose is due, when one needs getting ready, when one still isn't marked after a while, and the evening before chemo. For as-needed medicines you pick, a note when one is OK again if you need it, with overnight ones held for a morning list. See [Reminders](#reminders).
 - **Change history**: every dose, symptom, medicine, schedule and setting that's added, changed or deleted is recorded with who did it and the before and after. Deleted doses and symptom entries can be put back. The Excel report has a "Change history" sheet, so edits made after the fact are visible to the care team.
 - **Restore from Settings**: pick a backup, see what's in it compared with now, and restore. The app saves the current record first, so a restore can be undone the same way.
 
@@ -136,6 +136,8 @@ What gets sent:
 - **Get it ready**: at each medicine's prep time, for example "Take it out of the fridge: Filgrastim".
 - **Not marked yet**: if a dose isn't marked taken or skipped after 15 to 90 minutes (or never).
 - **Chemo tomorrow**: at 6:00 PM the day before each Day 1.
+- **OK again**, for the as-needed medicines you tick under **As-needed medicines**: once the label's time between doses has passed since the last one, and its daily limit (counted over 24 hours) allows another. It says the medicine is OK again if you need it. It never says one is due, and nothing is marked missed.
+- **Morning list**: at the time you choose (9:00 AM unless you change it), one notification with each ticked medicine planned that day and when it's OK. An "OK again" that comes up overnight, from the time under **Hold reminders overnight from** until the morning list, waits for the list instead of waking anyone. Medicines on a schedule keep their own times.
 
 Tapping a notification opens ChemoTracker at the **Link address** in Settings. Use the address family members' phones reach, for example `http://192.168.1.20:8000` or your Tailscale name.
 

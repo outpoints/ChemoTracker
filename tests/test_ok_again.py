@@ -236,6 +236,34 @@ def test_ok_time_exactly_at_the_morning_reminder_is_one_notification(db):
     assert "Prochlorperazine: OK if you need it" in sent[0].message.splitlines()
 
 
+def test_nothing_is_ticked_by_default_and_a_pain_medicine_reads_the_same(db):
+    """Opt-in only: after an upgrade no medicine sends anything, an opioid included. Once ticked it gets the same
+    'only if you need it' wording as the nausea pills."""
+    with session(db.db_path, write=True) as conn:
+        pain = store.create_medication(conn, {"name": "Oxycodone", "dose": "1 tablet"})
+        store.create_plan(conn, pain, {"kind": "as_needed", "start_day": "1", "end_day": None, "times": [],
+                                       "label": "As needed for pain", "dose": None, "from_cycle": None, "to_cycle": None})
+        conn.execute("UPDATE medications SET min_hours_between = 4 WHERE id = ?", (pain,))
+    took(db, pain, at(D3, 10))
+    assert oks(due(db, at(D3, 14))) == [] and mornings(due(db, at(D4, 9))) == []
+    choose(db, pain)
+    [r] = oks(due(db, at(D3, 14)))
+    assert (r.title, r.message) == ("Oxycodone is OK again", f"It's been 4 hr since the last one at 10:00 AM. {NOTE}")
+
+
+def test_scheduled_medicines_keep_their_times_through_the_overnight_hold(db):
+    """Only as-needed reminders wait for the morning. A bedtime pill inside the hold is still reminded on time."""
+    with session(db.db_path, write=True) as conn:
+        olz = store.add_from_catalog(conn, "olanzapine")
+        for p in store.plans(conn, olz):
+            store.delete_plan(conn, p["id"])
+        store.create_plan(conn, olz, {"kind": "scheduled", "start_day": "1", "end_day": "4", "times": ["23:30"],
+                                      "label": "At bedtime", "dose": None, "from_cycle": None, "to_cycle": None})
+    proc = add_prn(db, "prochlorperazine", 6)
+    choose(db, proc, quiet="22:00")
+    assert [r.key for r in due(db, at(D3, 23, 30))] == ["due|2026-05-06 23:30"]
+
+
 # ============================================================================ morning reminder
 
 

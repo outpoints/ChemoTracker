@@ -778,10 +778,13 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .check .d { display: block; color: var(--text-3); font-size: var(--fs-sm); font-weight: 400; }
 /* Settings > Reminders, as-needed medicines: a medicine with no gap saved can't be ticked yet. */
 .check.is-off { cursor: default; color: var(--text-2); }
+.form > .ok-again { margin-top: var(--s6); }
+.ok-again > legend { font-weight: 700; }
 .ok-again > .field { margin-top: var(--s4); }
-/* "We'll tell you when it's OK again" under an as-needed medicine, and its line on the medicine page. */
-.prn-bell { display: flex; align-items: center; gap: 6px; }
-.prn-bell .icon { width: 15px; height: 15px; }
+/* "We'll tell you when it's OK again" under an as-needed medicine, and its line on the medicine page. The bell sits
+   on the first line when the text wraps. */
+.prn-bell { display: flex; align-items: flex-start; gap: 6px; }
+.prn-bell .icon { width: 15px; height: 15px; margin-top: 0.2em; }
 
 /* severity cards */
 .sev-options { display: grid; gap: var(--s2); }
