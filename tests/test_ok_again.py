@@ -378,7 +378,7 @@ def test_settings_lists_as_needed_medicines_and_saves_only_allowed_values(client
     senna_box = form[form.rindex("<input", 0, i):form.index("</label>", i)]
     assert "disabled" in senna_box and "Save the hours between doses on" in senna_box
     assert f'href="/medicines/{senna}?edit=1#gap"' in senna_box
-    assert "Reminders that come up overnight wait for the morning reminder." in form
+    assert "As-needed reminders that come up overnight wait for the morning reminder. Scheduled doses still remind at their time." in form
 
     r = client.post("/settings/reminders", data={**BASE_FORM, "ntfy_ok_meds[]": [str(proc), str(dexa), str(lora), "abc",
                                                                                   str(senna)],
@@ -464,7 +464,7 @@ def test_today_shelf_says_well_tell_you_for_a_ticked_medicine(client, cfg, clock
     assert "OK again" not in html.unescape(_row(client.get("/").text, "Prochlorperazine")), "not ticked yet"
     _turn_on(client, proc)
     row = html.unescape(_row(client.get("/").text, "Prochlorperazine"))
-    assert "OK at 4:05 PM" in row and "We'll tell you when it's OK again" in row
+    assert "OK at 4:05 PM" in row and "We'll tell you at 4:05 PM" in row
     assert "prn-bell" in row
     with session(cfg.db_path, write=True) as conn:
         put_settings(conn, {"ntfy_enabled": ""})
@@ -479,6 +479,15 @@ def test_today_shelf_says_when_an_overnight_ok_time_will_be_told(client, cfg, cl
     took(cfg, proc, at(D4, 0, 30))  # OK again before the morning reminder, inside the quiet hours
     row = html.unescape(_row(client.get("/").text, "Prochlorperazine"))
     assert "We'll tell you at 9:00 AM" in row, row
+
+
+def test_today_shelf_says_nothing_about_later_when_a_ticked_medicine_is_already_ok(client, cfg, clock):
+    """'OK to take now' with 'We'll tell you when it's OK again' under it read as a contradiction."""
+    setup_walkthrough(client, DAY1)
+    proc = _ids(cfg)["Prochlorperazine"]
+    _turn_on(client, proc)
+    row = html.unescape(_row(client.get("/").text, "Prochlorperazine"))
+    assert "OK to take now" in row and "tell you" not in row and "prn-bell" not in row, row
 
 
 def test_medicine_page_says_whether_the_ok_again_reminder_is_on(client, cfg, clock):

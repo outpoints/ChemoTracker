@@ -154,15 +154,17 @@ def shelf_notes(conn: sqlite3.Connection, prefs: dict[str, str], now: datetime,
     morning = morning_at(prefs)
     out: dict[int, str] = {}
     for an in shelf:
-        if an.medication_id not in ticked or not an.gap_known or an.state(now) not in ("ok", "wait", "max"):
+        # Only while a reminder is pending. Under "OK to take now" a line about being told later reads as a
+        # contradiction, so a medicine that's already OK shows nothing.
+        if an.medication_id not in ticked or not an.gap_known or an.state(now) not in ("wait", "max"):
             continue
-        at = schedule.ok_again_at(conn, an) if an.state(now) != "ok" else None
-        if at is not None and not schedule.prn_covers(conn, an.medication_id, at.date()):
+        at = schedule.ok_again_at(conn, an)
+        if at is None or not schedule.prn_covers(conn, an.medication_id, at.date()):
             continue
-        if at is not None and morning is not None and held(at, prefs):
-            out[an.medication_id] = f"We'll tell you at {schedule.fmt_time(morning)}"
-        else:
-            out[an.medication_id] = "We'll tell you when it's OK again"
+        if morning is not None and held(at, prefs):
+            told = datetime.combine(at.date(), morning)  # the morning list at or after it
+            at = told if schedule.real_diff(told, at) >= timedelta(0) else told + timedelta(days=1)
+        out[an.medication_id] = f"We'll tell you {_ok_at_text(at, now)}"
     return out
 
 

@@ -82,7 +82,7 @@
           <select id="ntfy_morning" name="ntfy_morning">{% for v in ("off",) + morning_choices %}<option value="{{ v }}" {% if prefs.ntfy_morning == v %}selected{% endif %}>{{ "Off" if v == "off" else fmt_time(v) }}</option>{% endfor %}</select></div>
         <div class="field"><label for="ntfy_quiet_from">Hold reminders overnight from</label>
           <select id="ntfy_quiet_from" name="ntfy_quiet_from" aria-describedby="ok-hold">{% for v in ("off",) + quiet_choices %}<option value="{{ v }}" {% if prefs.ntfy_quiet_from == v %}selected{% endif %}>{{ "Don't hold" if v == "off" else fmt_time(v) }}</option>{% endfor %}</select>
-          <p class="hint" id="ok-hold">Reminders that come up overnight wait for the morning reminder.</p></div>
+          <p class="hint" id="ok-hold">As-needed reminders that come up overnight wait for the morning reminder. Scheduled doses still remind at their time.</p></div>
       </fieldset>
       {% else %}
       <input type="hidden" name="ntfy_morning" value="{{ prefs.ntfy_morning }}"><input type="hidden" name="ntfy_quiet_from" value="{{ prefs.ntfy_quiet_from }}">
