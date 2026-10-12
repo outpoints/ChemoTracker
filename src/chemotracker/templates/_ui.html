@@ -127,7 +127,7 @@
 </svg>
 {%- endmacro %}
 
-{% macro prn_row(an, now, today, people, back_url, reason=None, link=True, logged=()) -%}
+{% macro prn_row(an, now, today, people, back_url, reason=None, link=True, logged=(), bell=None) -%}
 {#- One as-needed medicine: its countdown ring, when the next one is OK, and one button. -#}
 {%- set st = an.state(now) -%}
 <div class="prn-row {{ st }}{{ ' just-logged' if an.last and an.last.id in logged }}">
@@ -140,6 +140,7 @@
       {{- facts | join(" · ") }}
       {%- if an.last_at %}{% set ld = an.last_at.date() %}{{ " · " if facts }}last {% if ld == today %}{% elif (today - ld).days == 1 %}yesterday {% else %}{{ fmt_day(ld) }} {% endif %}{{ fmt_time(an.last_at) }}{% if an.last.logged_by and people.get(an.last.logged_by) %}, {{ people[an.last.logged_by].name }}{% endif %}{% endif -%}
     </div>
+    {%- if bell %}<div class="dose-detail prn-bell">{{ icon("bell") }}<span>{{ bell }}</span></div>{% endif %}
     {%- if not an.scheduled_today %}<div class="dose-detail">Your schedule has it on {{ an.schedule_note or "other days" }}. Check with your care team before taking it today.</div>{% endif %}
     {%- if an.scheduled_today and not an.gap_known %}<a class="btn btn-quiet btn-sm prn-fix" href="/medicines/{{ an.medication_id }}?edit=1#gap">{{ icon("pencil") }}Add time between doses</a>{% endif %}
   </div>

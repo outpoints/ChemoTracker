@@ -51,7 +51,9 @@ NAG_CHOICES = ("0", "15", "30", "60", "90")
 TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
-def _reminder_values(data: dict, prefs: dict[str, str]) -> dict[str, str]:
+def _reminder_values(data: dict, prefs: dict[str, str], ok_allowed: set[int] | frozenset[int] = frozenset()
+                     ) -> dict[str, str]:
+    """The reminders form, checked. `ok_allowed`: the as-needed medicines that can be ticked for \"OK again\"."""
     topic = str(data.get("ntfy_topic") or "").strip()
     server = str(data.get("ntfy_server") or reminders.DEFAULT_SERVER).strip().rstrip("/")
     app_url = str(data.get("app_url") or "").strip().rstrip("/")
@@ -69,6 +71,10 @@ def _reminder_values(data: dict, prefs: dict[str, str]) -> dict[str, str]:
         token = ""
     elif not token:
         token = prefs.get("ntfy_token", "")  # blank field keeps the saved token
+    picked = data.get("ntfy_ok_meds") or []
+    picked = [picked] if isinstance(picked, str) else picked
+    ok_ids = sorted({int(v) for v in picked if str(v).strip().isdigit() and int(v) in ok_allowed})
+    morning, quiet = str(data.get("ntfy_morning") or ""), str(data.get("ntfy_quiet_from") or "")
     return {
         "ntfy_enabled": "1" if on else "",
         "ntfy_topic": topic,
@@ -79,6 +85,9 @@ def _reminder_values(data: dict, prefs: dict[str, str]) -> dict[str, str]:
         "ntfy_chemo": "1" if data.get("ntfy_chemo") == "1" else "0",
         "ntfy_names": "1" if data.get("ntfy_names") == "1" else "0",
         "app_url": app_url,
+        "ntfy_ok_meds": ",".join(map(str, ok_ids)),
+        "ntfy_morning": morning if morning in (*reminders.MORNING_CHOICES, "off") else reminders.MORNING_DEFAULT,
+        "ntfy_quiet_from": quiet if quiet in (*reminders.QUIET_CHOICES, "off") else reminders.QUIET_DEFAULT,
     }
 
 
@@ -356,11 +365,12 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                     overnight = schedule.Compartment("lastnight", "From last night", last)
             span = schedule.cycle_span(conn, plan.cycle) if plan.cycle else 0
             extras = schedule.extra_doses(conn, plan.cycle, day)
+            bells = reminders.shelf_notes(conn, prefs, current, plan.as_needed) if day == current.date() else {}
         return render(
             request, "today.html", active="today", plan=plan, ring=ring, upcoming=upcoming, next_doses=nxt, extras=extras,
             follow_ups=follow, feelings=feelings, other_prn=other_prn, focus=focus, span=span, day=day, overnight=overnight,
             upcoming_day1=schedule.day1_of(upcoming) if upcoming else None,
-            quick=[sx.BY_KEY[k] for k in sx.QUICK],
+            quick=[sx.BY_KEY[k] for k in sx.QUICK], bells=bells,
         )
 
     def warn_hash(text: str) -> str:
@@ -1193,9 +1203,15 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             length = max([c["length_days"] for c in cycles] + [14])
             events = history.for_medicine(conn, cfg.tz, med_id)
             dose_count = store.logged_dose_count(conn, med_id)
+            prefs = get_settings(conn)
+        # An active as-needed medicine says whether \"Tell me when it's OK again\" is on for it (Settings > Reminders).
+        ok_reminder = None
+        if med["active"] and any(p["kind"] == "as_needed" for p in plans):
+            ok_reminder = bool(reminders.enabled(prefs) and med_id in reminders.ok_med_ids(prefs)
+                               and med["min_hours_between"])
         return render(request, "medicine.html", active="medicines", med=med, plans=plans, recent=recent,
                       info=medinfo.lookup(med["info_key"]), is_new=bool(new), edit=bool(edit), error=None, length=length,
-                      events=events, dose_count=dose_count)
+                      events=events, dose_count=dose_count, ok_reminder=ok_reminder)
 
     @app.post("/medicines/{med_id}")
     async def save_medicine(request: Request, med_id: int):
@@ -1475,11 +1491,14 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             if not prefs_now.get("ntfy_topic") and not draft:
                 draft = reminders.new_topic()
                 put_settings(conn, {"ntfy_topic_draft": draft})
+            ok_choices = reminders.ok_choices(conn)
         files = backup.backup_files(cfg)[:12]
         return render(request, "settings.html", active="settings", history=backup_log, files=files, cfg=cfg,
                       next_backup=scheduler.next_at or backup.next_run(cfg, now()), changes=changes,
                       nudger=nudger, suggested_topic=draft or reminders.new_topic(), roles=profiles.ROLES,
-                      suggested_url=str(request.base_url).rstrip("/"), keep_special=backup.KEEP_SPECIAL)
+                      suggested_url=str(request.base_url).rstrip("/"), keep_special=backup.KEEP_SPECIAL,
+                      ok_choices=ok_choices, ok_ticked=reminders.ok_med_ids(prefs_now),
+                      morning_choices=reminders.MORNING_CHOICES, quiet_choices=reminders.QUIET_CHOICES)
 
     # ------------------------------------------------------------ reminders
 
@@ -1488,8 +1507,9 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         data = await form(request)
         with db() as conn:
             prefs = get_settings(conn)
+            ok_allowed = {r["id"] for r in reminders.ok_choices(conn) if r["min_hours_between"]}
         try:
-            values = _reminder_values(data, prefs)
+            values = _reminder_values(data, prefs, ok_allowed)
         except store.InvalidInput as exc:
             return go("/settings#reminders", str(exc), request)
         with db() as conn:

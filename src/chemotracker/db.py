@@ -548,6 +548,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "ntfy_nag": "30",
     "ntfy_chemo": "1",
     "ntfy_names": "1",
+    # "Tell me when it's OK again" for as-needed medicines: ticked medicine ids, the morning reminder, and when
+    # the overnight hold starts (it ends at the morning reminder). "off" turns either off.
+    "ntfy_ok_meds": "",
+    "ntfy_morning": "09:00",
+    "ntfy_quiet_from": "02:00",
     "app_url": "",
 }
 

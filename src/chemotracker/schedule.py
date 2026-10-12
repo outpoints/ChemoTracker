@@ -780,6 +780,39 @@ class AsNeeded:
         return f"in {fmt_duration(self.remaining(now))}"
 
 
+def limit_clears_at(taken: list[datetime], max_per_day: int | None, at: datetime) -> datetime:
+    """The first moment from `at` on when fewer than `max_per_day` of these doses count toward the label's limit.
+
+    A dose counts for 24 hours of real time from when it was taken (a time the clocks showed twice is read the
+    cautious way), the same rolling 24 hours the as-needed shelf counts. When the limit is reached at `at`, the
+    answer is the moment enough of the oldest doses stop counting."""
+    if not max_per_day:
+        return at
+    ends = []
+    for t in taken:
+        end = real_add(latest_reading(t), DAY_WINDOW)
+        if real_diff(at, t) >= timedelta(0) and real_diff(end, at) > timedelta(0):
+            ends.append(end)
+    if len(ends) < max_per_day:
+        return at
+    ends.sort(key=lambda e: real_diff(e, at))
+    return ends[len(ends) - max_per_day]
+
+
+def ok_again_at(conn: sqlite3.Connection, an: AsNeeded) -> datetime | None:
+    """When the next dose is OK by the label: the gap after the last one, moved later while the rolling 24-hour
+    limit is reached. None when nothing was taken or no gap is saved, because then the app can't say."""
+    nxt = an.next_allowed
+    if nxt is None or not an.max_per_day:
+        return nxt
+    rows = conn.execute(
+        """SELECT taken_at FROM dose_logs WHERE medication_id = ? AND status = 'taken' AND taken_at > ? AND taken_at <= ?""",
+        (an.medication_id, fmt_local(nxt - timedelta(hours=26)), fmt_local(nxt)),
+    ).fetchall()
+    taken = [t for t in (parse_local(r["taken_at"]) for r in rows) if t is not None]
+    return limit_clears_at(taken, an.max_per_day, nxt)
+
+
 # Two people giving the same medicine minutes apart is the classic double dose.
 RECENT_DUPLICATE = timedelta(minutes=30)
 

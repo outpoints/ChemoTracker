@@ -35,6 +35,7 @@
             {% else %}<span class="pill pill-late">No schedule yet</span>{% endfor %}
           </dd>
         </dl>
+        {% if ok_reminder is boolean %}<p class="meta prn-bell">{{ icon("bell") }}<span>Reminder when it's OK again: <a href="/settings#reminders">{{ "On" if ok_reminder else "Off" }}</a></span></p>{% endif %}
         {% if med.directions %}<p class="rx-sig">Label: {{ med.directions }}</p>{% endif %}
         {% if med.notes %}<p class="meta">{{ med.notes }}</p>{% endif %}
         {% if med.active and not at_clinic %}

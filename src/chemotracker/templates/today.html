@@ -202,7 +202,7 @@
               </div>
             </div>
             {% else %}
-            {{ prn_row(an, now, today, people, back_url, logged=logged) }}
+            {{ prn_row(an, now, today, people, back_url, logged=logged, bell=(bells or {}).get(an.medication_id)) }}
             {% endif %}
             {% endfor %}
             {% if day <= today %}<a class="btn btn-quiet btn-sm shelf-more" href="/dose/new">{{ icon("clock") }}Took one earlier? Log it with the time</a>{% endif %}

@@ -68,6 +68,25 @@
       </div>
       <label class="check"><input type="checkbox" name="ntfy_chemo" value="1" {% if prefs.ntfy_chemo != "0" %}checked{% endif %}><span>Remind the evening before chemo</span></label>
       <label class="check"><input type="checkbox" name="ntfy_names" value="1" {% if prefs.ntfy_names != "0" %}checked{% endif %}><span>Show medicine names <span class="meta">(off: "Medicine due at 9:30 PM")</span></span></label>
+      {% if ok_choices %}
+      <fieldset class="ok-again" id="ok-again">
+        <legend>As-needed medicines</legend>
+        {% for m in ok_choices %}
+        {% if m.min_hours_between %}
+        <label class="check"><input type="checkbox" name="ntfy_ok_meds[]" value="{{ m.id }}" {% if m.id in ok_ticked %}checked{% endif %}><span>Tell me when {{ m.name }} is OK again</span></label>
+        {% else %}
+        <label class="check is-off"><input type="checkbox" name="ntfy_ok_meds[]" value="{{ m.id }}" disabled aria-describedby="ok-gap-{{ m.id }}"><span>Tell me when {{ m.name }} is OK again<span class="d" id="ok-gap-{{ m.id }}">Save the hours between doses on <a href="/medicines/{{ m.id }}?edit=1#gap">its page</a> first</span></span></label>
+        {% endif %}
+        {% endfor %}
+        <div class="field"><label for="ntfy_morning">Morning reminder</label>
+          <select id="ntfy_morning" name="ntfy_morning">{% for v in ("off",) + morning_choices %}<option value="{{ v }}" {% if prefs.ntfy_morning == v %}selected{% endif %}>{{ "Off" if v == "off" else fmt_time(v) }}</option>{% endfor %}</select></div>
+        <div class="field"><label for="ntfy_quiet_from">Hold reminders overnight from</label>
+          <select id="ntfy_quiet_from" name="ntfy_quiet_from" aria-describedby="ok-hold">{% for v in ("off",) + quiet_choices %}<option value="{{ v }}" {% if prefs.ntfy_quiet_from == v %}selected{% endif %}>{{ "Don't hold" if v == "off" else fmt_time(v) }}</option>{% endfor %}</select>
+          <p class="hint" id="ok-hold">Reminders that come up overnight wait for the morning reminder.</p></div>
+      </fieldset>
+      {% else %}
+      <input type="hidden" name="ntfy_morning" value="{{ prefs.ntfy_morning }}"><input type="hidden" name="ntfy_quiet_from" value="{{ prefs.ntfy_quiet_from }}">
+      {% endif %}
       <details class="more">
         <summary>Advanced, for whoever set this up</summary>
         <div class="stack">

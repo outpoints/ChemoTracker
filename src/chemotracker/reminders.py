@@ -7,6 +7,10 @@ A background thread checks once every 30 seconds for:
 - due:   "9:30 PM medicines: Olanzapine 1 tablet"
 - nag:   "Not marked yet" when a dose still isn't marked taken or skipped some minutes later
 - chemo: "Chemo tomorrow" at 6 PM the day before Day 1
+- ok:    "Prochlorperazine is OK again" for an as-needed medicine someone ticked in Settings, once the label's
+         gap (and its rolling 24-hour limit) has passed since the last dose. Never "due": it's only if you need it.
+- morning: one list of those medicines at the chosen morning time. An OK time inside the overnight hold
+         (from ntfy_quiet_from until the morning reminder) waits for it instead of waking anyone.
 
 Each reminder has a key stored in `reminders_sent`, so a restart never repeats one, and
 a reminder older than CATCH_UP is dropped instead of arriving late in a burst. Every window
@@ -38,6 +42,13 @@ TICK_SECONDS = 30
 DEFAULT_SERVER = "https://ntfy.sh"
 # How a crash while working out the reminders starts in last_error, so Settings can say it in plain words.
 CHECK_FAILED = "reminder check failed"
+# As-needed medicines: the morning reminder (6:00 AM to 12:00 PM) and when the overnight hold starts (9:00 PM to
+# 6:00 AM), in 30-minute steps. "off" turns either off.
+MORNING_DEFAULT = "09:00"
+QUIET_DEFAULT = "02:00"
+MORNING_CHOICES = tuple(f"{h:02d}:{m:02d}" for h in range(6, 13) for m in (0, 30) if (h, m) <= (12, 0))
+QUIET_CHOICES = tuple(f"{h % 24:02d}:{m:02d}" for h in range(21, 31) for m in (0, 30) if (h, m) <= (30, 0))
+ONLY_IF = "Take it only if you need it, and follow the label."
 
 
 @dataclass
@@ -58,6 +69,101 @@ def new_topic() -> str:
 
 def enabled(prefs: dict[str, str]) -> bool:
     return prefs.get("ntfy_enabled") == "1" and bool(prefs.get("ntfy_topic"))
+
+
+def ok_med_ids(prefs: dict[str, str]) -> set[int]:
+    """The medicines ticked for \"Tell me when it's OK again\" (ntfy_ok_meds, comma-separated ids)."""
+    return {int(p) for p in (prefs.get("ntfy_ok_meds") or "").split(",") if p.strip().isdigit()}
+
+
+def ok_choices(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Medicines Settings offers for \"Tell me when it's OK again\": active ones with an as-needed plan (stopped and
+    archived ones aren't listed). Only those with the hours between doses saved can be ticked."""
+    return conn.execute(
+        """SELECT m.id, m.name, m.min_hours_between FROM medications m WHERE m.active = 1
+             AND EXISTS (SELECT 1 FROM plans p WHERE p.medication_id = m.id AND p.kind = 'as_needed')
+           ORDER BY m.name COLLATE NOCASE, m.id"""
+    ).fetchall()
+
+
+def _clock(value: str | None, default: str) -> time | None:
+    if value == "off":
+        return None
+    try:
+        return time.fromisoformat(value or default)
+    except ValueError:
+        return time.fromisoformat(default)
+
+
+def morning_at(prefs: dict[str, str]) -> time | None:
+    """The morning reminder's time, or None when it's off."""
+    return _clock(prefs.get("ntfy_morning"), MORNING_DEFAULT)
+
+
+def held(at: datetime, prefs: dict[str, str]) -> bool:
+    """Whether `at` falls in the overnight hold: from ntfy_quiet_from until the morning reminder (it may cross
+    midnight). With the morning reminder off nothing is held, because nothing would tell anyone later."""
+    start, end = _clock(prefs.get("ntfy_quiet_from"), QUIET_DEFAULT), morning_at(prefs)
+    if start is None or end is None or start == end:
+        return False
+    clock = at.time()
+    return start <= clock < end if start < end else (clock >= start or clock < end)
+
+
+def _on_day(d, today) -> str:
+    if d == today:
+        return ""
+    return "yesterday " if (today - d).days == 1 else f"on {schedule.fmt_day(d)} "
+
+
+def _ok_at_text(t: datetime, now: datetime) -> str:
+    """'at 11:20 AM', 'tomorrow at 1:00 AM'."""
+    if t.date() == now.date():
+        return f"at {schedule.fmt_time(t)}"
+    if (t.date() - now.date()).days == 1:
+        return f"tomorrow at {schedule.fmt_time(t)}"
+    return f"on {schedule.fmt_day(t.date())} at {schedule.fmt_time(t)}"
+
+
+def _as_needed_ticked(conn: sqlite3.Connection, prefs: dict[str, str], now: datetime
+                      ) -> list[tuple[schedule.AsNeeded, datetime | None]]:
+    """Each ticked medicine that is active with a gap saved, built the way Today's shelf builds it, with when the
+    next one is OK (the gap, moved later while the rolling 24-hour limit is reached)."""
+    out = []
+    for mid in sorted(ok_med_ids(prefs)):
+        med = conn.execute("SELECT * FROM medications WHERE id = ? AND active = 1", (mid,)).fetchone()
+        if med is None or not med["min_hours_between"]:
+            continue
+        an = schedule._as_needed_row(conn, med, None, now)
+        out.append((an, schedule.ok_again_at(conn, an)))
+    out.sort(key=lambda pair: (pair[0].name.lower(), pair[0].medication_id))
+    return out
+
+
+def _ok_key(an: schedule.AsNeeded, at: datetime) -> str:
+    return f"ok|{an.medication_id}|{an.last['id']}|{at:%Y-%m-%d %H:%M}"
+
+
+def shelf_notes(conn: sqlite3.Connection, prefs: dict[str, str], now: datetime,
+                shelf: list[schedule.AsNeeded]) -> dict[int, str]:
+    """The quiet line under a ticked medicine on Today's as-needed shelf, saying when the phone will hear about it.
+    Nothing when no reminder will come (reminders off, not planned, no gap, or the next OK time is after the plan)."""
+    if not enabled(prefs):
+        return {}
+    ticked = ok_med_ids(prefs)
+    morning = morning_at(prefs)
+    out: dict[int, str] = {}
+    for an in shelf:
+        if an.medication_id not in ticked or not an.gap_known or an.state(now) not in ("ok", "wait", "max"):
+            continue
+        at = schedule.ok_again_at(conn, an) if an.state(now) != "ok" else None
+        if at is not None and not schedule.prn_covers(conn, an.medication_id, at.date()):
+            continue
+        if at is not None and morning is not None and held(at, prefs):
+            out[an.medication_id] = f"We'll tell you at {schedule.fmt_time(morning)}"
+        else:
+            out[an.medication_id] = "We'll tell you when it's OK again"
+    return out
 
 
 def _int(value: str | None, default: int) -> int:
@@ -182,11 +288,82 @@ def due_reminders(conn: sqlite3.Connection, now: datetime, prefs: dict[str, str]
                    "or in the morning." if names else "Open ChemoTracker to see what's planned.")
             out.append(Reminder(f"chemo|{tomorrow.isoformat()}", title, msg, ("calendar",), 3, url))
 
+    out += _as_needed_reminders(conn, now, prefs, names, url)
+
     unique: dict[str, Reminder] = {}
     for r in out:
         if r.key not in sent:
             unique.setdefault(r.key, r)
     return list(unique.values())
+
+
+def _as_needed_reminders(conn: sqlite3.Connection, now: datetime, prefs: dict[str, str], names: bool,
+                         url: str | None) -> list[Reminder]:
+    """The morning list and \"OK again\" for ticked as-needed medicines. They say a medicine is OK again if you need
+    it, never that it's due: nothing is missed when nobody takes one."""
+    ticked = _as_needed_ticked(conn, prefs, now) if ok_med_ids(prefs) else []
+    if not ticked:
+        return []
+    click = f"{url}/#c-prn" if url else None
+    out: list[Reminder] = []
+    covered: set[str] = set()
+
+    morning = morning_at(prefs)
+    if morning is not None:
+        at = datetime.combine(now.date(), morning)
+        if timedelta(0) <= schedule.real_diff(now, at) < CATCH_UP:
+            start = _clock(prefs.get("ntfy_quiet_from"), QUIET_DEFAULT)
+            quiet_start = None
+            if start is not None:
+                quiet_start = datetime.combine(at.date(), start) - (timedelta(days=1) if start > morning else timedelta(0))
+            lines = []
+            for an, ok_at in ticked:
+                if not schedule.prn_covers(conn, an.medication_id, now.date()):
+                    continue
+                state = an.state(now)
+                if state == "ok":
+                    text = "OK if you need it"
+                    if ok_at is not None and an.last is not None:
+                        covered.add(_ok_key(an, ok_at))  # this list tells it, so the phone doesn't buzz twice
+                        if quiet_start is not None and held(ok_at, prefs) and \
+                                schedule.real_diff(ok_at, quiet_start) >= timedelta(0) > schedule.real_diff(ok_at, at):
+                            text += f", since {schedule.fmt_time(ok_at)}"
+                elif state == "wait" and ok_at is not None:
+                    text = f"OK {_ok_at_text(ok_at, now)}"
+                elif state == "max":
+                    text = f"Reached {an.max_per_day} in 24 hours"
+                    if ok_at is not None and schedule.prn_covers(conn, an.medication_id, ok_at.date()):
+                        text += f", OK {_ok_at_text(ok_at, now)}"
+                else:
+                    text = an.status_text(now)
+                lines.append(f"{an.name}: {text}")
+            if lines:
+                msg = ("\n".join(lines) + "\nTake one only if you need it, and follow the label." if names
+                       else "Open ChemoTracker to see when each one is OK.")
+                out.append(Reminder(f"morning|{now.date().isoformat()}", "Your as-needed medicines", msg, ("sunrise",), 3,
+                                    click, tuple(sorted(covered))))
+
+    for an, ok_at in ticked:
+        if ok_at is None or an.last is None or an.last_at is None:
+            continue
+        if not timedelta(0) <= schedule.real_diff(now, ok_at) < CATCH_UP:
+            continue
+        if held(ok_at, prefs) or held(now, prefs):  # overnight: the morning reminder lists it instead
+            continue
+        if not schedule.prn_covers(conn, an.medication_id, ok_at.date()):
+            continue  # the plan has ended (after Day 7, say): nothing to tell
+        key = _ok_key(an, ok_at)
+        if key in covered:
+            continue
+        if names:
+            ago = schedule.fmt_duration(schedule.real_diff(now, schedule.latest_reading(an.last_at)))
+            title = f"{an.name} is OK again"
+            msg = (f"It's been {ago} since the last one {_on_day(an.last_at.date(), now.date())}at "
+                   f"{schedule.fmt_time(an.last_at)}. {ONLY_IF}")
+        else:
+            title, msg = "A medicine is OK again", "Open ChemoTracker to see which one."
+        out.append(Reminder(key, title, msg, ("hourglass",), 3, click))
+    return out
 
 
 def _unsent(group: list[schedule.Slot], kind: str, stamp: str, sent: set[str]) -> list[schedule.Slot]:
