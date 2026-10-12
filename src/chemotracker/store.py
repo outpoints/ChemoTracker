@@ -296,8 +296,47 @@ def validate_cycle(values: dict) -> dict:
             "regimen": clean(values.get("regimen")), "notes": clean(values.get("notes"))}
 
 
+# Back-to-back cycles share one day: the next cycle's Day 0 is the last day of the one before.
+_SHARED_DAY = "Cycles can share only one day: the last day of one cycle is Day 0 of the next."
+
+
+def cycle_overlap(conn: sqlite3.Connection, data: dict, exclude_id: int | None = None,
+                  shift_after: tuple[int, int] | None = None) -> str | None:
+    """Why a cycle with these dates (validated `data`) can't be saved, or None.
+
+    Two cycles may not start on the same day, and neither one's chemo day (Day 1) may fall inside the other's days.
+    Today and the report would otherwise mix the two cycles' days. `shift_after` = (number, days) when the cycles
+    numbered above `number` move by `days` in the same save (a delay that moves the later cycles too).
+    """
+    from .schedule import fmt_day
+
+    first = date.fromisoformat(data["day1"])
+    last = first + timedelta(days=data["length_days"] - 1)
+    n = data["number"]
+    for row in conn.execute("SELECT * FROM cycles ORDER BY number").fetchall():
+        if row["id"] == exclude_id:
+            continue
+        o, o_first = row["number"], date.fromisoformat(row["day1"])
+        if shift_after is not None and o > shift_after[0]:
+            o_first += timedelta(days=shift_after[1])
+        o_last = o_first + timedelta(days=row["length_days"] - 1)
+        if o_first == first:
+            return (f"Cycle {o} already has its chemo day (Day 1) on {fmt_day(first)}. Two cycles can't start on the "
+                    f"same day. Check the date of cycle {n}'s chemo day.")
+        if o_first < first <= o_last:
+            return (f"Cycle {o} runs from {fmt_day(o_first)} to {fmt_day(o_last)}, so cycle {n}'s chemo day "
+                    f"({fmt_day(first)}) would fall inside it. {_SHARED_DAY} Check the date, or change cycle {o} first.")
+        if first < o_first <= last:
+            return (f"Cycle {o}'s chemo day ({fmt_day(o_first)}) would fall inside cycle {n}, which would run from "
+                    f"{fmt_day(first)} to {fmt_day(last)}. {_SHARED_DAY} Check the dates, or change cycle {o} first.")
+    return None
+
+
 def create_cycle(conn: sqlite3.Connection, values: dict) -> int:
     data = validate_cycle(values)
+    clash = cycle_overlap(conn, data)
+    if clash:
+        raise InvalidInput(clash)
     try:
         cur = conn.execute(
             "INSERT INTO cycles (number, day1, length_days, regimen, notes, created_at) VALUES (?,?,?,?,?,?)",
@@ -325,8 +364,19 @@ def create_cycle_series(conn: sqlite3.Connection, values: dict) -> list[int]:
     return ids
 
 
-def update_cycle(conn: sqlite3.Connection, cycle_id: int, values: dict) -> None:
+def update_cycle(conn: sqlite3.Connection, cycle_id: int, values: dict, shift_later: bool = False) -> None:
+    """Save a cycle. `shift_later` says the cycles after it move by the same number of days in this save (the
+    caller moves them), so the date check counts them where they'll be. A cycle whose dates didn't change saves
+    without the check, so a note can still be fixed on a record that already overlaps."""
     data = validate_cycle(values)
+    before = cycle(conn, cycle_id)
+    if before is None or (before["day1"], before["length_days"], before["number"]) != (
+            data["day1"], data["length_days"], data["number"]):
+        delta = (date.fromisoformat(data["day1"]) - date.fromisoformat(before["day1"])).days if before is not None else 0
+        clash = cycle_overlap(conn, data, exclude_id=cycle_id,
+                              shift_after=(data["number"], delta) if shift_later and delta else None)
+        if clash:
+            raise InvalidInput(clash)
     try:
         conn.execute(
             "UPDATE cycles SET number = ?, day1 = ?, length_days = ?, regimen = ?, notes = ? WHERE id = ?",
