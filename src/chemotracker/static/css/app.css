@@ -1034,6 +1034,9 @@ details.more > summary::after, .sheet-toggle > summary::after, .rx-example > sum
 details.more[open] > summary::after, .sheet-toggle[open] > summary::after, .rx-example[open] > summary::after { transform: rotate(-135deg); margin-top: 4px; }
 .card.more > summary::after { margin-left: auto; }
 .danger-zone { border-color: color-mix(in srgb, var(--danger) 25%, transparent); }
+details.archived { margin-top: var(--s8); }  /* same gap as a section title above it */
+details.archived > summary { gap: var(--s2); }
+details.archived > summary .meta { font-weight: 400; }
 .login { max-width: 420px; margin: 12vh auto; padding: var(--s4); }
 .theme-pick { max-width: 520px; }
 @media (max-width: 359.98px) { .theme-pick .segmented { grid-auto-flow: row; } }  /* three across, or one column; never 2 + 1 */
@@ -1116,6 +1119,7 @@ input[type="file"] { font: inherit; max-width: 100%; }
 .med-row .list-ico .icon { width: 18px; height: 18px; }
 .med-row .meta { display: block; margin-top: 2px; }
 .btn-danger.btn-quieter { border-color: transparent; padding-inline: var(--s3); }
+.btn-secondary.btn-quieter { border-color: transparent; background: transparent; padding-inline: var(--s3); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition-property: color, background-color, border-color, opacity !important; }

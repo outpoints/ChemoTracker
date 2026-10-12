@@ -164,7 +164,7 @@
 
       {% if events %}{{ history_card(events, "Label and schedule changes") }}{% endif %}
 
-      <div class="card card-pad danger-zone stack-sm">
+      <div class="card card-pad stack-sm{% if not med.archived_at %} danger-zone{% endif %}" id="stop-or-archive">
         {% if med.archived_at %}
         <p class="hint">Archived. It stays off Today, reminders and your medicine lists. Its doses are still in the report.</p>
         <form method="post" action="/medicines/{{ med.id }}/active"><input type="hidden" name="active" value="1">
