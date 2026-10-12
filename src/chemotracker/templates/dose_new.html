@@ -49,7 +49,8 @@
       </div>
       <div class="when-time">
         <label for="pick_time">Time</label>
-        <input id="pick_time" name="pick_time" type="time" value="{{ v.get('pick_time') or now.strftime('%H:%M') }}">
+        {#- data-now: app.js keeps an untouched clock at the real time, so a page left open never back-dates a dose. #}
+        <input id="pick_time" name="pick_time" type="time" value="{{ v.get('pick_time') if (ago == 'pick' and v.get('pick_time')) else now.strftime('%H:%M') }}" data-now="{{ now.strftime('%H:%M') }}">
         <p class="hint">A time later than now counts as last night.</p>
       </div>
     </fieldset>
