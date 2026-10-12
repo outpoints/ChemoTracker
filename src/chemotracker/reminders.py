@@ -164,7 +164,8 @@ def shelf_notes(conn: sqlite3.Connection, prefs: dict[str, str], now: datetime,
         if morning is not None and held(at, prefs):
             told = datetime.combine(at.date(), morning)  # the morning list at or after it
             at = told if schedule.real_diff(told, at) >= timedelta(0) else told + timedelta(days=1)
-        out[an.medication_id] = f"We'll tell you {_ok_at_text(at, now)}"
+        # A no-break space keeps "5:44 PM" together when the line wraps on a phone.
+        out[an.medication_id] = f"We'll tell you {_ok_at_text(at, now)}".replace(" AM", "\u00a0AM").replace(" PM", "\u00a0PM")
     return out
 
 
