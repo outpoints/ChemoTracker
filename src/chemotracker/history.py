@@ -344,6 +344,14 @@ def put_back(conn: sqlite3.Connection, event_id: int, confirm: bool = False, by:
         data.pop("id")  # its old id now belongs to another entry, so it comes back with a new one
     if table == "dose_logs":
         _check_dose(conn, data, confirm, by, now)
+    else:
+        _check_symptom(conn, data)
+    if "updated_at" in cols:
+        # A fresh stamp: an edit page opened before the delete must not pass its "changed since" check after a
+        # put back. updated_at isn't content, so the history stays one line.
+        from .store import stamp
+
+        data["updated_at"] = stamp()
     for who in ("logged_by", "updated_by"):
         if data.get(who) and not conn.execute("SELECT 1 FROM profiles WHERE id = ?", (data[who],)).fetchone():
             data[who] = None
@@ -351,6 +359,16 @@ def put_back(conn: sqlite3.Connection, event_id: int, confirm: bool = False, by:
     cur = conn.execute(f"INSERT INTO {table} ({', '.join(keys)}) VALUES ({', '.join('?' for _ in keys)})",
                        [data[k] for k in keys])
     return row["entity"], rowid(cur)
+
+
+def _check_symptom(conn: sqlite3.Connection, data: dict) -> None:
+    """The same symptom at the same logged time is already in the record (logged again after the delete)."""
+    if conn.execute("""SELECT 1 FROM symptom_logs WHERE symptom = ? AND COALESCE(label, '') = COALESCE(?, '')
+                         AND logged_at = ? LIMIT 1""", (data.get("symptom"), data.get("label"), data.get("logged_at"))).fetchone():
+        s = sx.lookup(data.get("symptom") or "")
+        name = data.get("label") or (s.name if s else "symptom")
+        raise CannotPutBack(f"There's already a {name} entry for {_fmt_time(data.get('logged_at') or '')}, so this one "
+                            "wasn't put back. Change that entry if it needs fixing.")
 
 
 def _check_dose(conn: sqlite3.Connection, data: dict, confirm: bool, by: int | None, now: datetime | None) -> None:

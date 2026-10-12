@@ -153,6 +153,8 @@ PER_DAY_TIMES = {1: ["08:00"], 2: ["08:00", "20:00"], 3: ["08:00", "14:00", "20:
 PER_DAY_N = re.compile(r"\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s*(?:x|times?)\s*"
                        r"(?:(?:a|per|each|every)\s+day|daily)\b")
 # A negated clause ("do not take at bedtime") must never become a time, day or frequency.
+# "Do not use for more than 3 days", "for no more than 3 days": how many days in all, from the first one.
+DAY_LIMIT = re.compile(rf"\b(?:(?:more|longer) than|exceed(?:ing)?)\s+({NUM_COUNT})\s*(?:consecutive\s+|straight\s+)?days?\b")
 NEGATION = re.compile(r"\b(?:do not|don'?t|never|avoid|not)\b[^.;,]*", re.I)
 TIME_WORDS = re.compile(r"bed ?time|\bnight|\bmorning|\bevening|\bnoon|\bhs\b|\bqhs\b|\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\b", re.I)
 DAY_WORDS = re.compile(r"\bon\b[^.;,]*\b(?:days?|chemo(?:therapy)?|treatment|infusion)\b", re.I)
@@ -277,6 +279,7 @@ def normalize(text: str) -> str:
     t = re.sub(r"[“”]", '"', t).replace("’", "'")
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"(?<=\d),(?=\d{3}\b)", "", t)  # "3,000 mg" is 3000 mg
+    t = re.sub(r"(?<![\w.])\.(?=\d)", "0.", t)  # a naked decimal point: ".5 mg" is 0.5 mg (ISMP)
     return t
 
 
@@ -555,6 +558,8 @@ class _Seg:
     hours_before: list[float] = field(default_factory=list)
     points: list[tuple[int, str, str]] = field(default_factory=list)  # (cycle day, "HH:MM", label) for each dose
     negations: list[str] = field(default_factory=list)
+    day_limit: int | None = None  # "do not use for more than 3 days"
+    day_limit_text: str = ""  # that clause as written, to quote back
 
 
 def _clock(text: str) -> list[str]:
@@ -619,6 +624,14 @@ def _parse_segment(text: str) -> _Seg:
         seg.negations.append(clause.strip(" ,;."))
     t = NEGATION.sub(" ", raw)
     seg.clean = t
+    lim = DAY_LIMIT.search(raw)
+    if lim and _num(lim.group(1)) and _num(lim.group(1)) == int(_num(lim.group(1)) or 0):
+        seg.day_limit = int(_num(lim.group(1)) or 0)
+        quoted = next((c for c in seg.negations if DAY_LIMIT.search(c.lower())), None)
+        if quoted is None:  # "for no more than 3 days": quote it from "for"
+            q = re.search(rf"(?:\bfor\s+)?(?:\bno\s+)?{DAY_LIMIT.pattern}", raw) or lim
+            quoted = (shown[q.start():q.end()] if len(shown) == len(raw) else q.group(0)).strip()
+        seg.day_limit_text = quoted
     m = re.search(rf"\b{VERBS}\s+({NUM})(?:\s*(?:-|to|or)\s*({NUM}))?\s*([a-zµ]+)?", t)
     if not m:
         m = re.search(rf"(?:^|\s)({NUM})(?:\s*(?:-|to|or)\s*({NUM}))?\s*(tablets?|tabs?|capsules?|caps?|pills?|ml|mg|mcg|g|units?|puffs?|drops?|packets?|patch(?:es)?|syringes?)\b", t)
@@ -961,6 +974,7 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
     prev_end: int | None = None
     plans: list[ParsedPlan] = []
     used_default_days = False
+    pointed: set[int] = set()  # plans placed dose by dose from chemo ("12 and 6 hours before chemo")
     qtys = {s.qty for s in segs if s.qty}
     # A step with its own frequency and days that isn't "as needed" is a real schedule ("every 8 hours for 2 days,
     # then every 8 hours as needed"). Keep the steps apart then, or the scheduled part turns into as needed.
@@ -1014,22 +1028,24 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
                 lbl = " and ".join(dict.fromkeys(x for _, x in entries if x)) or _plan_label(s, kind, med, full, times, onbody)
                 plans.append(ParsedPlan(kind=kind, start_day=day, end_day=day, times=times, label=lbl[:60],
                                         dose=seg_dose or "", from_label=True))
+                pointed.add(len(plans) - 1)
             prev_end = max(by_day)
             if s.hours_before:
                 med.notes.append(
                     f"Label says {_join([_fmt(h) for h in s.hours_before])} hours before chemo. The app doesn't know when chemo "
                     f"starts, so it guessed {_ampm(CHEMO_START)} and set {_points_text(points)}. Change the times to fit your chemo time.")
             continue
-        # Days
+        # Days. A day limit ("do not use for more than 3 days") counts like "for 3 days" from the first day.
         from_label = True
+        length = min(n for n in (s.length, s.day_limit) if n) if (s.length or s.day_limit) else None
         if s.days:
             day_runs = _runs(s.days)
-        elif s.start is not None or s.length:
+        elif s.start is not None or length:
             start = s.start if s.start is not None else (prev_end + 1 if prev_end is not None else (info.defaults.days[0] if info else 1))
-            if s.once or (s.length is None and kind != "as_needed" and not s.per_day and not s.interval):
+            if s.once or (length is None and kind != "as_needed" and not s.per_day and not s.interval):
                 end: int | None = start
-            elif s.length:
-                end = start + s.length - 1
+            elif length:
+                end = start + length - 1
             elif kind == "as_needed":
                 end = info.defaults.days[1] if info and info.defaults.days[1] >= start else None
                 from_label = False
@@ -1079,6 +1095,13 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
                                  "Add the other days by hand.")
             else:
                 med.notes.append(f"Label says weekly. The app set only Day {first_day}. Set the cycle to 7 days, or pick the day it's given.")
+        if s.day_limit:
+            said = s.day_limit_text[:1].upper() + s.day_limit_text[1:]
+            last = day_runs[-1][1]
+            if not s.days and not collapsed and last is not None and length == s.day_limit:
+                med.notes.append(f"The label says \"{said}\", so the last day is Day {last}.")
+            else:
+                med.notes.append(f"The label says \"{said}\". Check that the days follow it.")
         # Times
         times: list[str] = []
         named = ""
@@ -1123,6 +1146,8 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
         med.notes.append(f"Days aren't on the label, so this uses {_span(p.start_day, p.end_day)}. Match it to your clinic's sheet.")
     for s in segs:
         for clause in s.negations:
+            if clause == s.day_limit_text:
+                continue  # read as the day limit above
             said = clause[:1].upper() + clause[1:]
             if DAY_WORDS.search(clause) and plans:  # "not on chemo day"
                 med.notes.append(f"The label says \"{said}\". Check that the days follow it.")
@@ -1169,6 +1194,12 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
         med.prep_minutes = int(fridge.group(1) or fridge.group(2))
         med.prep_note = "Take it out of the fridge"
         med.notes.append(f"Reminder to take it out of the fridge {med.prep_minutes} minutes before each dose.")
+    for i, p in enumerate(plans):
+        night = small_hours_note(p.start_day, p.end_day, p.times, after_adding=True, hint=i not in pointed) \
+            if p.kind == "scheduled" else None
+        if night:
+            med.notes.append(night)
+            break
     if med.cycle_hint:
         med.notes.append(f"Label mentions a {med.cycle_hint}-day cycle. Check your cycle length matches.")
     if med.matched_by == "spelling":
@@ -1178,6 +1209,30 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
     med.notes = list(dict.fromkeys(med.notes))
     med.plans = plans
     return med
+
+
+def small_hours_note(start_day: int, end_day: int | None, times, after_adding: bool = False,
+                     hint: bool = True) -> str | None:
+    """Which night a schedule time between midnight and 4:59 AM means, or None.
+
+    A planned dose is dated by its cycle day, so 12:30 AM on Day 2 comes at the start of Day 2: the night between
+    Day 1 and Day 2. Premedication like "Day 1 at 3 AM" relies on that. People who think of it as Day 2's bedtime
+    mean the night after, so when every time is after midnight the note says which days to pick for that.
+    """
+    times = [t for t in times if t]
+    early = sorted(t for t in times if t < "05:00")
+    if not early:
+        return None
+    s = start_day
+    night = f"the night between Day {s - 1} and Day {s}" if s >= 1 else "the night before Day 0"
+    out = f"A time after midnight belongs to the start of that day. {_ampm(early[0])} on Day {s} is {night}."
+    if hint and len(early) == len(times):
+        if end_day is None:
+            days = f"start on Day {s + 1}"
+        else:
+            days = "choose " + (f"Day {s + 1}" if end_day == s else f"Days {s + 1} to {end_day + 1}")
+        out += f" If you meant the night after Day {s}, {days}" + (" after adding it." if after_adding else ".")
+    return out
 
 
 def parse(text: str) -> list[ParsedMed]:

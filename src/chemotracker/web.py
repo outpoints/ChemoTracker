@@ -435,6 +435,8 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 default_time = current
             elif slot.time:
                 default_time = slot.dt
+            elif slot.date == current.date() - timedelta(days=1) and current.hour < 6:
+                default_time = current  # yesterday's clinic dose tapped in the small hours: an infusion that ran late
             else:  # clinic dose on another day from a page that didn't ask when: keep it on that day
                 default_time = datetime.combine(slot.date, current.time())
             # "When was it taken?" from the Taken panel: just now or another clock time.
@@ -451,7 +453,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 except store.InvalidInput:
                     return go(back(data.get("back")), f"Pick the time it was {word}.", request)
             if status == "taken" and taken_at > current + schedule.AHEAD_OK:
-                return go(back(data.get("back")), "That time hasn't happened yet. Log it after it's taken.", request)
+                return go(back(data.get("back")), f"That time hasn't happened yet. Log it after it's {word}.", request)
             med = store.medication(conn, plan_row["medication_id"])
             existing = slot.log
             answer = str(data.get("confirm") or "")
@@ -887,7 +889,8 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
 
     def fits_its_slot(row: sqlite3.Row, when: datetime) -> bool:
         """Whether a dose logged for a planned dose still belongs to it at this time: the same day, the next morning
-        for an evening or bedtime dose, or the small hours after an afternoon dose (the rule Taken's clock uses)."""
+        for an evening or bedtime dose, or the small hours after an afternoon dose or a clinic dose (an infusion that
+        ran past midnight). The same rule Taken's and Given's clock uses."""
         if not row["slot"]:
             return True
         d = date.fromisoformat(row["slot"][:10])
@@ -895,7 +898,8 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             return True
         planned = row["slot"][11:16] if len(row["slot"]) > 10 else ""
         return when.date() == d + timedelta(days=1) and ((planned >= "17:00" and when.hour < 12)
-                                                         or (planned >= "12:00" and when.hour < 5))
+                                                         or (planned >= "12:00" and when.hour < 5)
+                                                         or (not planned and when.hour < 6))
 
     @app.post("/dose/{log_id}")
     async def save_dose(request: Request, log_id: int):
@@ -1121,6 +1125,9 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 chosen = set(keys) | {m.info_key for m in rx["rx_meds"] if m.info_key}
                 return render(request, "medicine_add.html", active="medicines", taken=taken, chosen=chosen, error=None,
                               catalog=medinfo.by_category(), shortcuts=medinfo.REGIMEN_SHORTCUTS, **rx)
+            same = _same_drug(conn, customs, keys) if data.get("confirm") != "same_drug" else None
+            if same is not None:
+                return same_drug_page(request, data, *same, action="/medicines/add")
             imported = _import_rx(conn, data)
             created.extend(imported)
             rx_keys = {store.medication(conn, i)["info_key"] for i in imported}
@@ -1139,6 +1146,27 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                       request)
         note = f" {len(imported)} filled in from your prescriptions." if imported else ""
         return go("/medicines", f"Added {len(created)} medicines.{note} Open each one to check it.", request)
+
+    def same_drug_page(request: Request, data: dict, custom: str, existing, action: str, back_url: str | None = None):
+        """Ask before adding a medicine of your own that is a medicine already on the list under another name. Two
+        entries for one drug keep separate gaps and daily limits, so a dose of one wouldn't count for the other."""
+        name = existing["name"]
+        if custom.lower() == name.lower():
+            said = f"{name} is already on your list."
+        elif existing["matched_by"] == "spelling":
+            said = f"{custom} looks like {name}, which is already on your list."
+        else:
+            said = f"{custom} is another name for {name}, which is already on your list."
+        opened = existing["id"] is not None and back_url is None
+        return render(request, "dose_confirm.html", active="medicines", med=existing, when=None,
+                      title="Already on your list", action=action,
+                      warning=said + " As two separate medicines, a dose of one wouldn't count toward the other's time "
+                                     "between doses or daily limit.",
+                      fields={**{k: v for k, v in data.items() if k not in ("confirm", "action")}, "confirm": "same_drug"},
+                      back_url=f"/medicines/{existing['id']}" if opened else (back_url or "/medicines/add"),
+                      cancel_label=f"Open {name}" if opened else "Leave it as it is", cancel_primary=True,
+                      confirm_label="Add it anyway",
+                      note="Nothing has been added yet. Only add it if it's a different medicine.")
 
     @app.post("/medicines/{med_id}/import")
     async def import_into_medicine(request: Request, med_id: int):
@@ -1253,7 +1281,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 store.create_plan(conn, med_id, data)
         except store.InvalidInput as exc:
             return go(f"/medicines/{med_id}?edit=1#plans", str(exc), request)
-        return go(f"/medicines/{med_id}", "Schedule added.", request)
+        return go(f"/medicines/{med_id}", "Schedule added." + _night_note(data), request)
 
     @app.post("/plans/{plan_id}")
     async def save_plan(request: Request, plan_id: int):
@@ -1277,7 +1305,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         if kept:
             times = " and ".join(schedule.fmt_time(log["taken_at"]) for log in kept if log["taken_at"])
             note = f" The dose logged today at {times} still counts." if len(kept) == 1 else f" The doses logged today at {times} still count."
-        return go(f"/medicines/{med_id}", "Schedule saved." + note, request)
+        return go(f"/medicines/{med_id}", "Schedule saved." + note + _night_note(data), request)
 
     @app.post("/plans/{plan_id}/delete")
     async def remove_plan(request: Request, plan_id: int):
@@ -1345,7 +1373,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 before = store.cycle(conn, cycle_id)
                 if before is None:
                     raise HTTPException(404)
-                store.update_cycle(conn, cycle_id, data)
+                store.update_cycle(conn, cycle_id, data, shift_later=bool(data.get("shift_later")))
                 after = store.cycle(conn, cycle_id)
                 delta = (date.fromisoformat(after["day1"]) - date.fromisoformat(before["day1"])).days
                 if delta and data.get("shift_later"):
@@ -1719,6 +1747,9 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 return render(request, "setup_medicines.html", step=3, catalog=medinfo.by_category(), chosen=chosen,
                               custom=custom, shortcuts=medinfo.REGIMEN_SHORTCUTS, **rx)
             rx_keys = {m.info_key for i, m in _included_rx(data) if m.info_key}
+            same = _same_drug(conn, customs, keys | rx_keys, active=False) if data.get("confirm") != "same_drug" else None
+            if same is not None:
+                return same_drug_page(request, data, *same, action="/setup/medicines", back_url="/setup/medicines")
             keys |= rx_keys
             stopped_names = []
             for m in store.medications(conn, active=True):
@@ -1774,7 +1805,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                               plan=_plan_from_form(data, plans[0] if plans else None), extra_plans=len(plans) - 1,
                               index=index, total=len(meds), info=medinfo.lookup(med["info_key"]), error=str(exc),
                               length=14, values=data)
-        return go(f"/setup/label/{index + 1}")
+        return go(f"/setup/label/{index + 1}", _night_note(data).strip() or None, request)
 
     @app.get("/setup/cycle", response_class=HTMLResponse)
     def setup_cycle(request: Request):
@@ -1993,12 +2024,42 @@ def _medicine_sections(meds: list[sqlite3.Row], plans: dict[int, list[sqlite3.Ro
     return _medicine_groups([m for m in meds if not clinic_only(m)]), clinic
 
 
+def _night_note(data: dict) -> str:
+    """' A time after midnight belongs to the start of that day...' for a schedule saved with a time between
+    midnight and 4:59 AM, else ''. Slots are dated by their cycle day, so the note says which night it means."""
+    try:
+        p = store.validate_plan(data)
+    except store.InvalidInput:
+        return ""
+    note = rxparse.small_hours_note(p["start_day"], p["end_day"], p["times"].split(",")) if p["kind"] == "scheduled" else None
+    return f" {note}" if note else ""
+
+
+def _same_drug(conn: sqlite3.Connection, customs: list[str], keys, active: bool = True):
+    """(typed name, medicine) when a medicine typed in as your own is a catalog medicine already on the list (or
+    ticked in the same form) under another name, like Compazine next to Prochlorperazine. None otherwise."""
+    on_list = {m["info_key"]: m for m in store.medications(conn, active=True) if m["info_key"]} if active else {}
+    for custom in customs:
+        key, how, _ = rxparse.match_drug(custom)
+        if key is None:
+            continue
+        if key in on_list:
+            return custom, {"id": on_list[key]["id"], "name": on_list[key]["name"], "strength": on_list[key]["strength"],
+                            "directions": on_list[key]["directions"], "matched_by": how}
+        info = medinfo.lookup(key)
+        if key in set(keys) and info is not None:
+            return custom, {"id": None, "name": info.generic, "strength": None, "directions": None, "matched_by": how}
+    return None
+
+
 def _chosen_time(choice: str, slot, at_time: str | None, current: datetime) -> datetime:
     """The time picked in "When was it taken?": now, or a clock time on the dose's day.
 
     "planned" is no longer offered (exact times only) but is still read, so a page left open from before
     the change logs the time it showed instead of falling through to now.
-    An evening or bedtime dose logged at an early-morning time was taken after midnight.
+    An evening or bedtime dose logged at an early-morning time was taken after midnight. So was a clinic dose
+    (no planned time) logged between midnight and 5:59 AM: an infusion that ran late, given in the early hours
+    after the clinic day. The caller refuses it if that hasn't happened yet.
     Raises ValueError when "other time" has no usable time.
     """
     if choice == "planned" and slot.time:
@@ -2009,6 +2070,8 @@ def _chosen_time(choice: str, slot, at_time: str | None, current: datetime) -> d
         # An afternoon, evening or bedtime dose with a morning clock time was given the next morning ("From last
         # night" stays on Today until noon), or after midnight. A later time than now is refused by the caller.
         if slot.time and slot.time >= "12:00" and hh < 12 and (slot.dt - when > timedelta(hours=8) or hh < 5):
+            when += timedelta(days=1)
+        elif not slot.time and hh < 6:
             when += timedelta(days=1)
         return when
     return current

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from . import medinfo, units
 from . import symptoms as sx
@@ -313,8 +313,47 @@ def validate_cycle(values: dict) -> dict:
             "regimen": clean(values.get("regimen")), "notes": clean(values.get("notes"))}
 
 
+# Back-to-back cycles share one day: the next cycle's Day 0 is the last day of the one before.
+_SHARED_DAY = "Cycles can share only one day: the last day of one cycle is Day 0 of the next."
+
+
+def cycle_overlap(conn: sqlite3.Connection, data: dict, exclude_id: int | None = None,
+                  shift_after: tuple[int, int] | None = None) -> str | None:
+    """Why a cycle with these dates (validated `data`) can't be saved, or None.
+
+    Two cycles may not start on the same day, and neither one's chemo day (Day 1) may fall inside the other's days.
+    Today and the report would otherwise mix the two cycles' days. `shift_after` = (number, days) when the cycles
+    numbered above `number` move by `days` in the same save (a delay that moves the later cycles too).
+    """
+    from .schedule import fmt_day
+
+    first = date.fromisoformat(data["day1"])
+    last = first + timedelta(days=data["length_days"] - 1)
+    n = data["number"]
+    for row in conn.execute("SELECT * FROM cycles ORDER BY number").fetchall():
+        if row["id"] == exclude_id:
+            continue
+        o, o_first = row["number"], date.fromisoformat(row["day1"])
+        if shift_after is not None and o > shift_after[0]:
+            o_first += timedelta(days=shift_after[1])
+        o_last = o_first + timedelta(days=row["length_days"] - 1)
+        if o_first == first:
+            return (f"Cycle {o} already has its chemo day (Day 1) on {fmt_day(first)}. Two cycles can't start on the "
+                    f"same day. Check the date of cycle {n}'s chemo day.")
+        if o_first < first <= o_last:
+            return (f"Cycle {o} runs from {fmt_day(o_first)} to {fmt_day(o_last)}, so cycle {n}'s chemo day "
+                    f"({fmt_day(first)}) would fall inside it. {_SHARED_DAY} Check the date, or change cycle {o} first.")
+        if first < o_first <= last:
+            return (f"Cycle {o}'s chemo day ({fmt_day(o_first)}) would fall inside cycle {n}, which would run from "
+                    f"{fmt_day(first)} to {fmt_day(last)}. {_SHARED_DAY} Check the dates, or change cycle {o} first.")
+    return None
+
+
 def create_cycle(conn: sqlite3.Connection, values: dict) -> int:
     data = validate_cycle(values)
+    clash = cycle_overlap(conn, data)
+    if clash:
+        raise InvalidInput(clash)
     try:
         cur = conn.execute(
             "INSERT INTO cycles (number, day1, length_days, regimen, notes, created_at) VALUES (?,?,?,?,?,?)",
@@ -342,8 +381,19 @@ def create_cycle_series(conn: sqlite3.Connection, values: dict) -> list[int]:
     return ids
 
 
-def update_cycle(conn: sqlite3.Connection, cycle_id: int, values: dict) -> None:
+def update_cycle(conn: sqlite3.Connection, cycle_id: int, values: dict, shift_later: bool = False) -> None:
+    """Save a cycle. `shift_later` says the cycles after it move by the same number of days in this save (the
+    caller moves them), so the date check counts them where they'll be. A cycle whose dates didn't change saves
+    without the check, so a note can still be fixed on a record that already overlaps."""
     data = validate_cycle(values)
+    before = cycle(conn, cycle_id)
+    if before is None or (before["day1"], before["length_days"], before["number"]) != (
+            data["day1"], data["length_days"], data["number"]):
+        delta = (date.fromisoformat(data["day1"]) - date.fromisoformat(before["day1"])).days if before is not None else 0
+        clash = cycle_overlap(conn, data, exclude_id=cycle_id,
+                              shift_after=(data["number"], delta) if shift_later and delta else None)
+        if clash:
+            raise InvalidInput(clash)
     try:
         conn.execute(
             "UPDATE cycles SET number = ?, day1 = ?, length_days = ?, regimen = ?, notes = ? WHERE id = ?",
@@ -458,7 +508,7 @@ def log_slot(conn: sqlite3.Connection, plan_row: sqlite3.Row, slot: str, status:
         conn.execute(
             """UPDATE dose_logs SET plan_id = ?, slot = ?, kind = ?, status = ?, taken_at = ?, dose = COALESCE(?, dose),
                       updated_at = ?, updated_by = COALESCE(?, updated_by) WHERE id = ?""",
-            (plan_row["id"], slot, plan_row["kind"], status, taken, dose, now, by, log_id),
+            (plan_row["id"], slot, plan_row["kind"], status, taken, dose, stamp(conn, "dose_logs", log_id), by, log_id),
         )
         return log_id
     existing = conn.execute("SELECT id FROM dose_logs WHERE plan_id = ? AND slot = ?", (plan_row["id"], slot)).fetchone()
@@ -466,7 +516,7 @@ def log_slot(conn: sqlite3.Connection, plan_row: sqlite3.Row, slot: str, status:
         conn.execute(
             """UPDATE dose_logs SET status = ?, taken_at = ?, dose = COALESCE(?, dose), updated_at = ?,
                       updated_by = COALESCE(?, updated_by) WHERE id = ?""",
-            (status, taken, dose, now, by, existing["id"]),
+            (status, taken, dose, stamp(conn, "dose_logs", existing["id"]), by, existing["id"]),
         )
         return existing["id"]
     cur = conn.execute(
@@ -474,7 +524,7 @@ def log_slot(conn: sqlite3.Connection, plan_row: sqlite3.Row, slot: str, status:
                                   created_at, updated_at)
            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (plan_row["medication_id"], plan_row["id"], plan_row["kind"], slot, status, taken, dose, clean(reason), by,
-         now, now),
+         now, stamp()),
     )
     return rowid(cur)
 
@@ -486,7 +536,7 @@ def log_dose(conn: sqlite3.Connection, med_id: int, taken_at: datetime, dose: st
         """INSERT INTO dose_logs (medication_id, plan_id, kind, slot, status, taken_at, dose, reason, logged_by,
                                   created_at, updated_at)
            VALUES (?,?,'as_needed',NULL,'taken',?,?,?,?,?,?)""",
-        (med_id, plan_id, taken_at.strftime("%Y-%m-%d %H:%M"), clean(dose), clean(reason), by, now, now),
+        (med_id, plan_id, taken_at.strftime("%Y-%m-%d %H:%M"), clean(dose), clean(reason), by, now, stamp()),
     )
     return rowid(cur)
 
@@ -496,6 +546,24 @@ def _first(value) -> str | None:
     if isinstance(value, list):
         value = next((v for v in value if v), None)
     return value or None
+
+
+def stamp(conn: sqlite3.Connection | None = None, table: str | None = None, row_id: int | None = None) -> str:
+    """The updated_at an entry gets when it's saved: UTC to the microsecond, and always later than the entry's
+    previous stamp, so an edit page opened before any save (even one in the same second) can tell it changed.
+
+    Rows saved before this keep their whole-second stamps. Pages compare stamps as text, and a new stamp never
+    equals an old one.
+    """
+    now = datetime.now(UTC).isoformat(timespec="microseconds")
+    if conn is not None and table in ("dose_logs", "symptom_logs") and row_id is not None:
+        old = conn.execute(f"SELECT updated_at FROM {table} WHERE id = ?", (row_id,)).fetchone()
+        if old is not None and old[0] and now <= old[0]:
+            try:
+                now = (datetime.fromisoformat(old[0]) + timedelta(microseconds=1)).isoformat(timespec="microseconds")
+            except ValueError:
+                pass
+    return now
 
 
 # Every column of a dose record. A dose's stamp changes whenever anything about it does, or when its id is
@@ -519,7 +587,7 @@ def restore_dose(conn: sqlite3.Connection, log_id: int, snapshot: dict) -> None:
             "updated_by")
     conn.execute(
         f"UPDATE dose_logs SET plan_id = ?, {', '.join(f'{c} = ?' for c in cols)}, updated_at = ? WHERE id = ?",
-        [plan_id, *(snapshot.get(c) for c in cols), utcnow(), log_id],
+        [plan_id, *(snapshot.get(c) for c in cols), stamp(conn, "dose_logs", log_id), log_id],
     )
 
 
@@ -547,7 +615,8 @@ def update_dose_log(conn: sqlite3.Connection, log_id: int, values: dict, fallbac
         """UPDATE dose_logs SET status = ?, taken_at = ?, dose = ?, reason = ?, helped = ?, dose_feel = ?,
                   side_effects = ?, notes = ?, updated_at = ?, updated_by = COALESCE(?, updated_by) WHERE id = ?""",
         (status, taken.strftime("%Y-%m-%d %H:%M") if taken else None, clean(values.get("dose")),
-         clean(values.get("reason")), helped, feel, clean(effects), clean(values.get("notes")), utcnow(), by, log_id),
+         clean(values.get("reason")), helped, feel, clean(effects), clean(values.get("notes")),
+         stamp(conn, "dose_logs", log_id), by, log_id),
     )
     if rebind is not None:
         plan_id, slot, kind = rebind
@@ -566,7 +635,7 @@ def quick_follow_up(conn: sqlite3.Connection, log_id: int, helped: str | None, d
     if sets:
         conn.execute(
             f"UPDATE dose_logs SET {', '.join(sets)}, updated_at = ?, updated_by = COALESCE(?, updated_by) WHERE id = ?",
-            [*args, utcnow(), by, log_id],
+            [*args, stamp(conn, "dose_logs", log_id), by, log_id],
         )
 
 
@@ -645,7 +714,8 @@ def add_symptom(conn: sqlite3.Connection, values: dict, fallback: datetime, by: 
     cur = conn.execute(
         """INSERT INTO symptom_logs (logged_at, symptom, label, severity, value, notes, logged_by, created_at, updated_at)
            VALUES (?,?,?,?,?,?,?,?,?)""",
-        (data["logged_at"], data["symptom"], data["label"], data["severity"], data["value"], data["notes"], by, now, now),
+        (data["logged_at"], data["symptom"], data["label"], data["severity"], data["value"], data["notes"], by, now,
+         stamp()),
     )
     return rowid(cur)
 
@@ -657,7 +727,7 @@ def update_symptom(conn: sqlite3.Connection, entry_id: int, values: dict, fallba
         """UPDATE symptom_logs SET logged_at = ?, symptom = ?, label = ?, severity = ?, value = ?, notes = ?,
                   updated_at = ?, updated_by = COALESCE(?, updated_by) WHERE id = ?""",
         (data["logged_at"], data["symptom"], data["label"], data["severity"], data["value"], data["notes"],
-         utcnow(), by, entry_id),
+         stamp(conn, "symptom_logs", entry_id), by, entry_id),
     )
 
 
