@@ -14,13 +14,14 @@ def test_reader_reads_a_leading_dot_as_a_half():
 
 
 def test_reader_reads_do_not_use_for_more_than_n_days_as_the_day_limit():
+    # As needed: the limit counts from the first dose, not a cycle day, so the usual days stay and the label is quoted.
+    # Capping the days would call a first rescue dose on Day 4 "not planned".
     [m] = rxparse.parse("Prochlorperazine 10 MG TAB - Take 1 tablet by mouth every 6 hours as needed for nausea. "
                         "Do not use for more than 3 days.")
     p = m.plans[0]
-    assert p.kind == "as_needed" and p.end_day == p.start_day + 2
+    assert p.kind == "as_needed" and p.end_day != p.start_day + 2
     assert not any("Days aren't on the label" in n for n in m.notes), m.notes
-    assert any('"Do not use for more than 3 days"' in n for n in m.notes), m.notes
-    assert any("Start day isn't on the label" in n for n in m.notes), m.notes  # the start is still a guess, said so
+    assert any('"Do not use for more than 3 days". That counts from the first dose' in n for n in m.notes), m.notes
     # With a start on the label, the limit sets the last day. Scheduled medicines read it too.
     [m] = rxparse.parse("Dexamethasone 4 MG TAB - Take 1 tablet by mouth twice daily starting the day after chemo. "
                         "Do not take for more than 3 days.")
@@ -40,4 +41,4 @@ def test_reader_explains_which_night_a_time_after_midnight_means():
     assert night == ["A time after midnight belongs to the start of that day. 3:00 AM on Day 1 is the night between "
                      "Day 0 and Day 1."]
     [m] = rxparse.parse("Prochlorperazine 10 MG TAB - Take 1 tablet every 6 hours as needed for nausea for no more than 3 days")
-    assert any('"For no more than 3 days", so the last day is Day 3' in n for n in m.notes), m.notes
+    assert any('"For no more than 3 days". That counts from the first dose' in n for n in m.notes), m.notes

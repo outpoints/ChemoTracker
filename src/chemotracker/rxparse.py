@@ -974,6 +974,7 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
     prev_end: int | None = None
     plans: list[ParsedPlan] = []
     used_default_days = False
+    limit_explained = False  # an as-needed day limit was quoted, which also says where the days came from
     pointed: set[int] = set()  # plans placed dose by dose from chemo ("12 and 6 hours before chemo")
     qtys = {s.qty for s in segs if s.qty}
     # A step with its own frequency and days that isn't "as needed" is a real schedule ("every 8 hours for 2 days,
@@ -1035,9 +1036,12 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
                     f"Label says {_join([_fmt(h) for h in s.hours_before])} hours before chemo. The app doesn't know when chemo "
                     f"starts, so it guessed {_ampm(CHEMO_START)} and set {_points_text(points)}. Change the times to fit your chemo time.")
             continue
-        # Days. A day limit ("do not use for more than 3 days") counts like "for 3 days" from the first day.
+        # Days. A day limit ("do not use for more than 3 days") counts like "for 3 days" from the first day. For an
+        # as-needed medicine the first day is whenever it's first needed, not a cycle day, so its days stay the usual
+        # ones and the limit is quoted instead: capping them would call a first dose on Day 4 "not planned".
         from_label = True
-        length = min(n for n in (s.length, s.day_limit) if n) if (s.length or s.day_limit) else None
+        limit = s.day_limit if kind != "as_needed" else None
+        length = min(n for n in (s.length, limit) if n) if (s.length or limit) else None
         if s.days:
             day_runs = _runs(s.days)
         elif s.start is not None or length:
@@ -1098,7 +1102,11 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
         if s.day_limit:
             said = s.day_limit_text[:1].upper() + s.day_limit_text[1:]
             last = day_runs[-1][1]
-            if not s.days and not collapsed and last is not None and length == s.day_limit:
+            if kind == "as_needed" and not s.days and not s.length:
+                med.notes.append(f"The label says \"{said}\". That counts from the first dose, not from chemo day, so "
+                                 f"the app kept the usual days ({_span(day_runs[0][0], last)}). Follow the label.")
+                limit_explained = True
+            elif not s.days and not collapsed and last is not None and length == s.day_limit:
                 med.notes.append(f"The label says \"{said}\", so the last day is Day {last}.")
             else:
                 med.notes.append(f"The label says \"{said}\". Check that the days follow it.")
@@ -1141,7 +1149,7 @@ def parse_medicine(head: str, directions: str) -> ParsedMed:
             med.notes.append("Label says weekly. Set the cycle to 7 days, or pick the day it's given.")
         if s.every_other and not collapsed:
             med.notes.append("Label says every other day. Pick the days it's taken.")
-    if used_default_days and plans:
+    if used_default_days and plans and not limit_explained:
         p = plans[0]
         med.notes.append(f"Days aren't on the label, so this uses {_span(p.start_day, p.end_day)}. Match it to your clinic's sheet.")
     for s in segs:
