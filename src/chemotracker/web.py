@@ -435,6 +435,8 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 default_time = current
             elif slot.time:
                 default_time = slot.dt
+            elif slot.date == current.date() - timedelta(days=1) and current.hour < 6:
+                default_time = current  # yesterday's clinic dose tapped in the small hours: an infusion that ran late
             else:  # clinic dose on another day from a page that didn't ask when: keep it on that day
                 default_time = datetime.combine(slot.date, current.time())
             # "When was it taken?" from the Taken panel: just now or another clock time.
@@ -451,7 +453,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 except store.InvalidInput:
                     return go(back(data.get("back")), f"Pick the time it was {word}.", request)
             if status == "taken" and taken_at > current + schedule.AHEAD_OK:
-                return go(back(data.get("back")), "That time hasn't happened yet. Log it after it's taken.", request)
+                return go(back(data.get("back")), f"That time hasn't happened yet. Log it after it's {word}.", request)
             med = store.medication(conn, plan_row["medication_id"])
             existing = slot.log
             answer = str(data.get("confirm") or "")
@@ -887,7 +889,8 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
 
     def fits_its_slot(row: sqlite3.Row, when: datetime) -> bool:
         """Whether a dose logged for a planned dose still belongs to it at this time: the same day, the next morning
-        for an evening or bedtime dose, or the small hours after an afternoon dose (the rule Taken's clock uses)."""
+        for an evening or bedtime dose, or the small hours after an afternoon dose or a clinic dose (an infusion that
+        ran past midnight). The same rule Taken's and Given's clock uses."""
         if not row["slot"]:
             return True
         d = date.fromisoformat(row["slot"][:10])
@@ -895,7 +898,8 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             return True
         planned = row["slot"][11:16] if len(row["slot"]) > 10 else ""
         return when.date() == d + timedelta(days=1) and ((planned >= "17:00" and when.hour < 12)
-                                                         or (planned >= "12:00" and when.hour < 5))
+                                                         or (planned >= "12:00" and when.hour < 5)
+                                                         or (not planned and when.hour < 6))
 
     @app.post("/dose/{log_id}")
     async def save_dose(request: Request, log_id: int):
@@ -1986,7 +1990,9 @@ def _chosen_time(choice: str, slot, at_time: str | None, current: datetime) -> d
 
     "planned" is no longer offered (exact times only) but is still read, so a page left open from before
     the change logs the time it showed instead of falling through to now.
-    An evening or bedtime dose logged at an early-morning time was taken after midnight.
+    An evening or bedtime dose logged at an early-morning time was taken after midnight. So was a clinic dose
+    (no planned time) logged between midnight and 5:59 AM: an infusion that ran late, given in the early hours
+    after the clinic day. The caller refuses it if that hasn't happened yet.
     Raises ValueError when "other time" has no usable time.
     """
     if choice == "planned" and slot.time:
@@ -1997,6 +2003,8 @@ def _chosen_time(choice: str, slot, at_time: str | None, current: datetime) -> d
         # An afternoon, evening or bedtime dose with a morning clock time was given the next morning ("From last
         # night" stays on Today until noon), or after midnight. A later time than now is refused by the caller.
         if slot.time and slot.time >= "12:00" and hh < 12 and (slot.dt - when > timedelta(hours=8) or hh < 5):
+            when += timedelta(days=1)
+        elif not slot.time and hh < 6:
             when += timedelta(days=1)
         return when
     return current
