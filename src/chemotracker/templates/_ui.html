@@ -14,7 +14,9 @@
 
 {#- "When was it taken?" under a Taken button. A <details>, so it opens and works without scripts.
     Exact times only: Just now, or Other time with a clock. No planned-time or "N min ago" guesses.
-    choices: (field, value, label) buttons, empty on a past day. other: the Other time row. -#}
+    choices: (field, value, label) buttons, empty on a past day. other: the Other time row. other.live marks a
+    clock filled in with the time the page was drawn: app.js keeps it at the real time until someone changes it,
+    so a page left open never back-dates a dose. A planned time (an earlier day) isn't live. -#}
 {% macro take_panel(label, btn_class, question, choices, other=None, lead=True) -%}
 <details class="take" data-take>
   <summary class="btn {{ btn_class }} btn-take" data-prn-button><span class="take-closed">{{ icon("check") }}{{ label }}</span><span class="take-open"><span>{{ question }}</span><span class="take-cancel">Cancel</span></span></summary>
@@ -29,7 +31,7 @@
     {%- if other %}
     <div class="take-other">
       <label for="{{ other.id }}">Other time</label>
-      <input id="{{ other.id }}" type="time" name="{{ other.field }}" value="{{ other.default }}">
+      <input id="{{ other.id }}" type="time" name="{{ other.field }}" value="{{ other.default }}"{% if other.live and other.default %} data-now="{{ other.default }}"{% endif %}>
       <button class="btn btn-secondary" type="submit" name="{{ other.name }}" value="{{ other.value }}">Log it</button>
     </div>
     {%- endif %}
@@ -150,7 +152,7 @@
     {#- As-needed: the time sets when the next one is OK, so it always asks. The spacing check uses the time picked. #}
     {{ take_panel("Took one", "btn-secondary", "When did you take it?",
                   [("ago", "0", "Just now")],
-                  {"id": "pt-" ~ an.medication_id, "field": "pick_time", "name": "ago", "value": "pick", "default": now.strftime("%H:%M")},
+                  {"id": "pt-" ~ an.medication_id, "field": "pick_time", "name": "ago", "value": "pick", "default": now.strftime("%H:%M"), "live": True},
                   lead=False) }}
     {#- lead=False: as-needed choices stay equally quiet. The app never nudges anyone toward taking one. #}
   </form>

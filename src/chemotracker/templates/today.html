@@ -34,7 +34,7 @@
 </details>
 {%- endmacro %}
 
-{% macro dose_row(slot, now, back_url, people, is_today=True, logged=()) -%}
+{% macro dose_row(slot, now, back_url, people, is_today=True, logged=(), note="") -%}
 {%- set p = slot.plan -%}
 {%- set st = slot.status(now) -%}
 {%- set urgent = st in ("due", "late", "clinic") -%}
@@ -49,6 +49,8 @@
     {%- if detail %}<div class="dose-detail">{{ detail }}</div>{% endif %}
     {%- set prep = slot.prep_text(now) %}
     {%- if prep %}<div class="dose-prep {{ 'is-now' if prep.endswith(' now') }}">{{ icon("refrigerator" if "fridge" in prep else "clock") }}<span>{{ prep }}</span></div>{% endif %}
+    {#- A dose of this medicine that fills no planned dose (a Took one) was just taken. The dose stays, Taken warns. #}
+    {%- if note %}<div class="extra-note dose-took">{{ icon("triangle-alert") }}<span>{{ note }}</span></div>{% endif %}
     {#- The compartment header already says Due now / Was due / the time. Rows only add what happened. #}
     {%- if slot.log or st in ("missed", "not_logged") %}
     <div class="dose-status">
@@ -77,14 +79,14 @@
       {#- Clinic doses ask when too. Chemo's time starts the 24 hours before a white-cell booster is allowed. #}
       {{ take_panel("Given", cls, "When was it given?", [("when", "now", "Just now")] if is_today else [],
                     {"id": "at-" ~ p.id ~ "-" ~ (slot.key | replace(" ", "-") | replace(":", "")), "field": "at_time", "name": "when", "value": "at",
-                     "default": now.strftime("%H:%M") if is_today else ""}) }}
+                     "default": now.strftime("%H:%M") if is_today else "", "live": is_today}) }}
       {%- elif not is_today and not slot.time %}
       <button class="btn {{ cls }} btn-take" type="submit">{{ icon("check") }}Taken</button>
       {%- else %}
       {#- Exact times only. On a past day "Just now" would be wrong, so only Other time shows, set to the planned time to check. #}
       {{ take_panel("Taken", cls, "When was it taken?", [("when", "now", "Just now")] if is_today else [],
                     {"id": "at-" ~ p.id ~ "-" ~ (slot.key | replace(" ", "-") | replace(":", "")), "field": "at_time", "name": "when", "value": "at",
-                     "default": now.strftime("%H:%M") if is_today else (slot.time or "")}) }}
+                     "default": now.strftime("%H:%M") if is_today else (slot.time or ""), "live": is_today}) }}
       {%- endif %}
     </form>
     <form method="post" action="/slot">
@@ -218,7 +220,7 @@
             {{ icon("chevron-down", "chev") }}
           </summary>
           <div class="c-body">
-            {%- for s in c.slots %}{{ dose_row(s, now, back_url, people, is_today, logged) }}{% endfor %}
+            {%- for s in c.slots %}{{ dose_row(s, now, back_url, people, is_today, logged, plan.took_note(s, now)) }}{% endfor %}
             {%- set open_now = c.open_now(now) %}
             {%- if open_now | length > 1 %}
             {#- Pills in one compartment are often taken together: one answer for all of them. #}
@@ -228,7 +230,7 @@
               {{ take_panel("Took both" if open_now | length == 2 else "Took all " ~ (open_now | length), "btn-secondary", "When were they taken?",
                             [("when", "now", "Just now")] if is_today else [],
                             {"id": "at-all-" ~ c.key, "field": "at_time", "name": "when", "value": "at",
-                             "default": now.strftime("%H:%M") if is_today else (open_now[0].time or "")}) }}
+                             "default": now.strftime("%H:%M") if is_today else (open_now[0].time or ""), "live": is_today}) }}
             </form>
             {%- endif %}
           </div>

@@ -73,10 +73,34 @@
     if (target && target.tagName === "DETAILS") target.open = true;
   }));
 
+  // "Other time" clocks filled in with the time the page was drawn (data-now) follow the real time until someone
+  // changes them, so accepting the clock on a page left open never back-dates a dose. A planned time (an earlier
+  // day) has no data-now and stays. The time is the one drawn plus the time since, so it is the server's time even
+  // when the phone is set to another zone. Past midnight the page is a day old: the clock is emptied to pick.
+  const pad = (n) => String(n).padStart(2, "0");
+  const clockNow = (input) => {
+    const [h, m] = input.dataset.now.split(":").map(Number);
+    const mins = h * 60 + m + Math.floor((Date.now() - loadedAt) / 60000);
+    return mins < 24 * 60 ? `${pad(Math.floor(mins / 60))}:${pad(mins % 60)}` : "";
+  };
+  const syncClock = (input) => {
+    if (input.dataset.typed || input === document.activeElement) return;
+    const shown = "auto" in input.dataset ? input.dataset.auto : input.dataset.now;
+    if (input.value !== shown) { input.dataset.typed = "1"; return; }  // changed by hand, or kept from a page before
+    input.value = input.dataset.auto = clockNow(input);
+  };
+  const liveClocks = (root = document) => $$("input[type=time][data-now]", root);
+  liveClocks().forEach((input) => ["input", "change"].forEach((ev) => input.addEventListener(ev, () => { input.dataset.typed = "1"; })));
+  // Log a dose: choosing Other time sets an untouched clock to now.
+  $$('input[name="ago"][value="pick"]').forEach((r) => r.addEventListener("change", () => liveClocks(r.form).forEach(syncClock)));
+  // While a clock is on screen it keeps up (a panel left open). Hidden ones are set when they open.
+  if (liveClocks().length) setInterval(() => liveClocks().forEach((i) => { if (i.offsetParent !== null) syncClock(i); }), 20000);
+
   // "When was it taken?" panels: one open at a time, and the panel is scrolled into view when it opens.
   $$("details[data-take]").forEach((d) => d.addEventListener("toggle", () => {
     if (!d.open) return;
     $$("details[data-take][open]").forEach((o) => { if (o !== d) o.open = false; });
+    liveClocks(d).forEach(syncClock);
     const panel = d.querySelector(".take-panel");
     if (panel && panel.scrollIntoView) panel.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
   }));
@@ -319,18 +343,44 @@
     if (el.value) { const f = el.form; $$('input[type="date"]', f).forEach((d) => (d.disabled = true)); f.submit(); }
   }));
 
-  // As-needed countdown rings tick down without a reload.
+  // As-needed countdown rings tick down without a reload. At zero the ring never says "OK to take now" by itself:
+  // someone may have logged one on another phone since the page was drawn. It says "Checking…" and the page is
+  // drawn again once nothing would be lost (nothing open, typed or waiting to be read), so the server answers.
   const C = 113.1;
+  const minsLeft = (sec) => Math.max(0, Math.floor(sec / 60));  // rounded down, like the server draws them
   const fmt = (sec) => {
-    const m = Math.max(0, Math.ceil(sec / 60));
+    const m = minsLeft(sec);
     if (m >= 120) return `${Math.floor(m / 60)}h`;
     if (m >= 60) return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
     return `${m}m`;
   };
   const words = (sec) => {
-    const m = Math.max(0, Math.ceil(sec / 60));
+    const m = minsLeft(sec);
+    if (m < 1) return "in less than a minute";
     const h = Math.floor(m / 60), r = m % 60;
     return "in " + (h && r ? `${h} hr ${r} min` : h ? `${h} hr` : `${r} min`);
+  };
+  const changed = (el) => {
+    if (el.type === "hidden" || "now" in el.dataset) return false;  // live clocks follow the time on their own
+    if (el.type === "radio" || el.type === "checkbox") return el.checked !== el.defaultChecked;
+    if (el.tagName === "SELECT") {
+      const first = Array.from(el.options).findIndex((o) => o.defaultSelected);
+      return el.selectedIndex !== Math.max(first, 0);
+    }
+    return el.value !== el.defaultValue;
+  };
+  const busy = () => {
+    const a = document.activeElement;
+    return Boolean((a && /INPUT|TEXTAREA|SELECT/.test(a.tagName)) || $$("input, textarea, select").some(changed) ||
+      document.querySelector("details[data-take][open], dialog[open], .toast:not([data-toast-auto])"));
+  };
+  let recheck = null, asking = false;
+  const askServer = () => {
+    if (asking || document.visibilityState !== "visible" || busy()) return;
+    asking = true;  // a page that can't be reached stays as it is ("Checking…") instead of an error page
+    fetch(location.href, { cache: "no-store", credentials: "same-origin" })
+      .then((r) => { if (r.ok) location.reload(); else asking = false; })
+      .catch(() => { asking = false; });
   };
   const tick = () => {
     const elapsed = (Date.now() - loadedAt) / 1000;
@@ -340,32 +390,30 @@
       const bar = svg.querySelector(".bar");
       const label = svg.querySelector("[data-left]");
       const box = svg.closest(".prn-row");
+      const w = box && box.querySelector("[data-wait]");
       if (left <= 0) {
-        svg.classList.replace("wait", "ok");
         svg.removeAttribute("data-remaining");
         bar.setAttribute("stroke-dashoffset", "0");
-        if (label) label.remove();
-        const t = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        t.setAttribute("class", "tick"); t.setAttribute("d", "M15 22.5l4.5 4.5 9-10");
-        svg.appendChild(t);
-        if (box) {
-          box.classList.replace("wait", "ok");
-          const s = box.querySelector("[data-status]"); if (s) s.textContent = "OK to take now";
-          const w = box.querySelector("[data-wait]"); if (w) w.textContent = "";
-          const btn = box.querySelector("[data-prn-button]");
-        }
+        if (label) label.textContent = "";
+        const s = box && box.querySelector("[data-status]"); if (s) s.textContent = "Checking…";
+        if (w) w.textContent = "";
+        if (!recheck) recheck = setInterval(askServer, 5000);
+        askServer();
         return;
       }
       bar.setAttribute("stroke-dashoffset", (C * (left / total)).toFixed(2));
       if (label) label.textContent = fmt(left);
-      const w = box && box.querySelector("[data-wait]"); if (w) w.textContent = words(left);
+      if (w) w.textContent = words(left);
     });
   };
   if (document.querySelector("svg.countdown[data-remaining]")) setInterval(tick, 20000);
 
   // Coming back to the app after a while: refresh so "due" states are current.
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && Date.now() - loadedAt > 3 * 60 * 1000 && document.querySelector(".today")) {
+    if (document.visibilityState !== "visible") return;
+    if (recheck) askServer();
+    liveClocks().forEach((i) => { if (i.offsetParent !== null) syncClock(i); });
+    if (Date.now() - loadedAt > 3 * 60 * 1000 && document.querySelector(".today")) {
       const editing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
       if (!editing) location.reload();
     }

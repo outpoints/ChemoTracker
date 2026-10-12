@@ -36,6 +36,8 @@ CATCH_UP = timedelta(minutes=45)
 CHEMO_EVE = time(18, 0)
 TICK_SECONDS = 30
 DEFAULT_SERVER = "https://ntfy.sh"
+# How a crash while working out the reminders starts in last_error, so Settings can say it in plain words.
+CHECK_FAILED = "reminder check failed"
 
 
 @dataclass
@@ -228,6 +230,9 @@ def send(prefs: dict[str, str], r: Reminder, timeout: float = 10) -> None:
 def problem_text(error: str | None) -> str:
     """What a failed reminder means for the family, in plain words. The raw error stays available as details."""
     e = (error or "").lower()
+    if e.startswith(CHECK_FAILED):
+        return ("Something went wrong in ChemoTracker while checking for reminders, so they may not go out. "
+                "It tries again every 30 seconds. If this message stays, restart ChemoTracker.")
     if "couldn't reach" in e:
         return ("The reminder server didn't answer. Check that this computer is online, "
                 "and that the server address under Advanced is right.")
@@ -269,13 +274,22 @@ class ReminderScheduler:
     def now(self) -> datetime:
         return datetime.now(self.settings.tz).replace(tzinfo=None, second=0, microsecond=0)
 
+    def _failed(self, exc: Exception) -> None:
+        """A crash in the check is shown in Settings (it used to be only in the log, so Settings looked fine)."""
+        self.last_error, self.last_error_at = f"{CHECK_FAILED}: {type(exc).__name__}: {exc}", self.now()
+        log.exception("reminder check failed")
+
     def tick(self, sender=send) -> int:
         """One pass. Returns how many reminders went out."""
-        with session(self.settings.db_path) as conn:
-            prefs = get_settings(conn)
-            if not enabled(prefs):
-                return 0
-            due = due_reminders(conn, self.now(), prefs)
+        try:
+            with session(self.settings.db_path) as conn:
+                prefs = get_settings(conn)
+                due = due_reminders(conn, self.now(), prefs) if enabled(prefs) else []
+        except Exception as exc:  # noqa: BLE001 - shown in Settings, tried again next tick
+            self._failed(exc)
+            return 0
+        if self.last_error and self.last_error.startswith(CHECK_FAILED):
+            self.last_error = None  # the check works again. A send problem stays until a reminder goes through.
         count = 0
         for r in due:
             try:
@@ -297,5 +311,5 @@ class ReminderScheduler:
         while not self._stop.wait(TICK_SECONDS):
             try:
                 self.tick()
-            except Exception:  # noqa: BLE001 - never let the thread die
-                log.exception("reminder check failed")
+            except Exception as exc:  # noqa: BLE001 - never let the thread die, and show it in Settings
+                self._failed(exc)
