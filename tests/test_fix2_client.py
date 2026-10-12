@@ -194,7 +194,8 @@ def test_fine_small_hours_dose_still_fills_last_night_when_only_last_night_allow
 
 def test_bug_early_dose_warning_names_whoever_last_changed_the_entry(client, cfg):
     """John logs a Took one, then Jane corrects its time on her phone. When John taps Took one again, the warning
-    said "You logged one", although Jane's version is what's saved. dose_warning already names updated_by."""
+    said only "You logged one", hiding that Jane changed it. Naming only Jane would be wrong too: John logged it.
+    The warning names the person who logged it and then who changed it, like the report's "John (edited by Jane)"."""
     setup_walkthrough(client, today(cfg) - timedelta(days=3))  # Day 4: prochlorperazine OK as needed, 6 hr apart
     jane = TestClient(client.app)
     with session(cfg.db_path) as conn:
@@ -213,15 +214,15 @@ def test_bug_early_dose_warning_names_whoever_last_changed_the_entry(client, cfg
     with session(cfg.db_path) as conn:
         assert conn.execute("SELECT updated_by FROM dose_logs WHERE id = ?", (row["id"],)).fetchone()[0] == people["Jane"]
     johns = warning_of(client.post("/dose/quick", data=took).text)
-    assert "Jane logged one" in johns and "You logged one" not in johns, johns
+    assert "You logged one" in johns and "Jane changed that entry." in johns and "Jane logged one" not in johns, johns
     janes = warning_of(jane.post("/dose/quick", data=took).text)
-    assert "You logged one" in janes and "John logged one" not in janes, janes
+    assert "John logged one" in janes and "You changed that entry." in janes and "You logged one" not in janes, janes
 
 
 def warning_of(page: str) -> str:
-    """The sentence a confirm page starts its warning with."""
+    """The warning a confirm page shows, from its first sentence to the end of that paragraph."""
     text = html.unescape(page)
-    found = re.search(r"[A-Z][^<>.]* one at [^<>]*?\.", text)
+    found = re.search(r"[A-Z][^<>.]* one at [^<>]*", text)
     assert found, "no warning on the page"
     return found.group(0)
 

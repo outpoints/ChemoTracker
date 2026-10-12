@@ -361,9 +361,11 @@ class Slot:
 
 
 LOG_SQL = """
-SELECT dl.*, m.name AS med_name, m.active AS med_active, who.name AS who
+SELECT dl.*, m.name AS med_name, m.active AS med_active, who.name AS who, lb.name AS logged_name,
+       ub.name AS edited_name
   FROM dose_logs dl JOIN medications m ON m.id = dl.medication_id
   LEFT JOIN profiles who ON who.id = COALESCE(dl.updated_by, dl.logged_by)
+  LEFT JOIN profiles lb ON lb.id = dl.logged_by LEFT JOIN profiles ub ON ub.id = dl.updated_by
  ORDER BY COALESCE(dl.taken_at, dl.slot), dl.id
 """
 
@@ -802,8 +804,8 @@ def early_dose_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetim
     limit = timedelta(hours=gap) if gap else RECENT_DUPLICATE
     window = limit + timedelta(hours=2)  # wall-clock search; the real gap is checked below
     near = conn.execute(
-        """SELECT dl.taken_at, dl.logged_by, dl.updated_by, p.name AS who FROM dose_logs dl
-                  LEFT JOIN profiles p ON p.id = COALESCE(dl.updated_by, dl.logged_by)
+        """SELECT dl.taken_at, dl.logged_by, dl.updated_by, lb.name AS logged_name, ub.name AS edited_name
+             FROM dose_logs dl LEFT JOIN profiles lb ON lb.id = dl.logged_by LEFT JOIN profiles ub ON ub.id = dl.updated_by
             WHERE dl.medication_id = ? AND dl.status = 'taken' AND dl.taken_at > ? AND dl.taken_at < ? AND dl.id != ?
             ORDER BY abs(julianday(dl.taken_at) - julianday(?)) LIMIT 1""",
         (med["id"], fmt_local(when - window), fmt_local(when + window), exclude_id or -1, fmt_local(when)),
@@ -813,16 +815,12 @@ def early_dose_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetim
         assert other is not None
         apart = _apart(when, other)
         if apart < limit:
-            if by is not None and (near["updated_by"] or near["logged_by"]) == by:  # whoever saved it last
-                who = "You logged"
-            elif near["who"]:
-                who = f"{near['who']} logged"
-            else:
-                who = "There's"
+            name = _who_logged(near, by)
+            who = "There's" if name == "someone" else f"{_cap(name)} logged"
             when_txt = f"{fmt_relative_day(other.date(), when.date()).lower()} at {fmt_time(other)}" \
                 if other.date() != when.date() else f"at {fmt_time(other)}"
             side = "before this one" if other <= when else "after this time"
-            first = f"{who} one {when_txt}, {fmt_duration(apart)} {side}."
+            first = f"{who} one {when_txt}, {fmt_duration(apart)} {side}.{_edit_note(near, by)}"
             if gap:
                 return f"{first} The label says at least {gap:g} hours between doses."
             return f"{first} Make sure it isn't the same dose logged twice."
@@ -871,10 +869,28 @@ def booster_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetime, 
             f"{fmt_time(chemo)}, {fmt_duration(apart)} before this dose. Check with your care team before giving it.")
 
 
+def _person(pid: int | None, name: str | None, by: int | None) -> str | None:
+    if pid is None:
+        return None
+    return "you" if by is not None and pid == by else (name or None)
+
+
 def _who_logged(log: sqlite3.Row, by: int | None) -> str:
-    if by is not None and (log["updated_by"] or log["logged_by"]) == by:
-        return "you"
-    return log["who"] if "who" in log.keys() and log["who"] else "someone"
+    """Who logged a dose, for a warning: the person who logged it ("you" on their own phone), never just whoever
+    changed the entry last. `_edit_note` adds that person when it was someone else."""
+    return _person(log["logged_by"], log["logged_name"] if "logged_name" in log.keys() else None, by) or "someone"
+
+
+def _edit_note(log: sqlite3.Row, by: int | None) -> str:
+    """' Jane changed that entry.' when someone other than the person who logged a dose changed it last."""
+    if not log["updated_by"] or log["updated_by"] == log["logged_by"]:
+        return ""
+    editor = _person(log["updated_by"], log["edited_name"] if "edited_name" in log.keys() else None, by)
+    return f" {_cap(editor)} changed that entry." if editor else ""
+
+
+def _cap(text: str) -> str:
+    return text[:1].upper() + text[1:]
 
 
 def _plan_days(plans: list[sqlite3.Row]) -> str:
@@ -938,8 +954,8 @@ def _planned_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetime,
         who = _who_logged(last, by)
         at = f" at {fmt_time(last['taken_at'])}" if last["taken_at"] else ""
         if planned_count == 1:
-            return (f"{med['name']} {is_word} planned once {day_word}, and {who} already logged it{at}. "
-                    "Make sure it isn't the same dose logged twice.")
+            return (f"{med['name']} {is_word} planned once {day_word}, and {who} already logged it{at}."
+                    f"{_edit_note(last, by)} Make sure it isn't the same dose logged twice.")
         return (f"{med['name']} {is_word} planned {planned_count} times {day_word}, and all {planned_count} are "
                 f"already logged, the last{at}. Make sure it isn't the same dose logged twice.")
     times = sorted({s.dt for s in mine if s.time})
@@ -947,7 +963,8 @@ def _planned_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetime,
         steps = [b - a for a, b in zip(times, times[1:]) if b > a]
         gap = min(steps) if steps else timedelta(hours=24)
         near = conn.execute(
-            """SELECT dl.*, p.name AS who FROM dose_logs dl LEFT JOIN profiles p ON p.id = COALESCE(dl.updated_by, dl.logged_by)
+            """SELECT dl.*, lb.name AS logged_name, ub.name AS edited_name FROM dose_logs dl
+                LEFT JOIN profiles lb ON lb.id = dl.logged_by LEFT JOIN profiles ub ON ub.id = dl.updated_by
                 WHERE dl.medication_id = ? AND dl.status = 'taken' AND dl.taken_at > ? AND dl.taken_at < ? AND dl.id != ?
                 ORDER BY abs(julianday(dl.taken_at) - julianday(?)) LIMIT 1""",
             (mid, fmt_local(when - gap), fmt_local(when + gap), exclude_id or -1, fmt_local(when)),
@@ -960,8 +977,8 @@ def _planned_warning(conn: sqlite3.Connection, med: sqlite3.Row, when: datetime,
                 side = "before this one" if other <= when else "after this time"
                 other_day = "" if other.date() == when.date() else f"{fmt_relative_day(other.date(), when.date()).lower()} "
                 every = "once a day" if len(times) == 1 else f"{fmt_duration(gap)} apart"
-                return (f"{_who_logged(near, by).capitalize()} logged {med['name']} {other_day}at {fmt_time(other)}, "
-                        f"{fmt_duration(apart)} {side}. It's planned {every}.")
+                return (f"{_cap(_who_logged(near, by))} logged {med['name']} {other_day}at {fmt_time(other)}, "
+                        f"{fmt_duration(apart)} {side}.{_edit_note(near, by)} It's planned {every}.")
     return None
 
 
