@@ -1,4 +1,5 @@
-{# Plan (schedule) fields. Expects: plan (row/dict or none), length, show_cycles #}
+{# Plan (schedule) fields. Expects: plan (row/dict or none), length, show_cycles.
+   plan_dose_field renames the schedule's dose input where it shares a form with the medicine's own dose. #}
 {% from "_ui.html" import icon %}
 {% set p = plan or {} %}
 {% set kind = p.kind or "scheduled" %}
@@ -44,7 +45,7 @@
 <div class="field-row">
 <div class="field">
   <label for="dose-{{ p.id or 'new' }}">Dose for this schedule <span class="meta">(if different)</span></label>
-  <input id="dose-{{ p.id or 'new' }}" name="dose" type="text" value="{{ p.dose or '' }}" placeholder="For example: 2 tablets">
+  <input id="dose-{{ p.id or 'new' }}" name="{{ plan_dose_field | default('dose') }}" type="text" value="{{ p.dose or '' }}" placeholder="For example: 2 tablets">
 </div>
 <div class="field">
   <label for="label-{{ p.id or 'new' }}">Short note shown with the dose <span class="meta">(optional)</span></label>

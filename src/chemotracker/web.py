@@ -1813,16 +1813,17 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
                 return go("/setup/team")
             med = meds[index]
             plans = store.plans(conn, med["id"])
+            plan_values = _setup_plan_values(data, plans[0] if plans else None)
             try:
                 store.update_medication(conn, med["id"], data)
                 if plans:
-                    store.update_plan(conn, plans[0]["id"], data)
+                    store.update_plan(conn, plans[0]["id"], plan_values)
                 else:
-                    store.create_plan(conn, med["id"], data)
+                    store.create_plan(conn, med["id"], plan_values)
             except store.InvalidInput as exc:
                 conn.rollback()
                 return render(request, "setup_label.html", status_code=400, step=4, med=med,
-                              plan=_plan_from_form(data, plans[0] if plans else None), extra_plans=len(plans) - 1,
+                              plan=_plan_from_form(plan_values, plans[0] if plans else None), extra_plans=len(plans) - 1,
                               index=index, total=len(meds), info=medinfo.lookup(med["info_key"]), error=str(exc),
                               length=14, values=data)
         return go(f"/setup/label/{index + 1}", _night_note(data).strip() or None, request)
@@ -2137,6 +2138,21 @@ def _setup_order(meds: list[sqlite3.Row]) -> list[sqlite3.Row]:
     order = {key: i for i, (key, _, _) in enumerate(medinfo.CATEGORIES)}
     priority = {"nausea": 0, "blood": 1, "oral_cancer": 2, "comfort": 3, "premed": 4, "infusion": 5}
     return sorted(meds, key=lambda m: (priority.get(m["category"] or "", 6), order.get(m["category"] or "", 9), m["name"]))
+
+
+def _setup_plan_values(data: dict, existing: sqlite3.Row | None) -> dict:
+    """The schedule part of the setup label form, which also holds the medicine's own fields.
+
+    Its dose arrives as plan_dose, so it can't collide with the medicine's dose (two fields named dose
+    reached the store as a list). The page has no cycle fields, so a schedule the prescription reader
+    limited to some cycles keeps them.
+    """
+    out = dict(data)
+    if "plan_dose" in out:
+        out["dose"] = out.pop("plan_dose")
+    if existing is not None and "from_cycle" not in out:
+        out["from_cycle"], out["to_cycle"] = existing["from_cycle"], existing["to_cycle"]
+    return out
 
 
 def _plan_from_form(data: dict, existing: sqlite3.Row | None) -> dict:

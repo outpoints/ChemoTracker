@@ -36,7 +36,7 @@
   <div class="card card-pad form">
     <h2>When you take it</h2>
     {% if extra_plans > 0 %}<p class="hint">This medicine has {{ extra_plans }} more schedule{{ "s" if extra_plans > 1 }}. Change those under Medicines.</p>{% endif %}
-    {% with show_cycles=False %}{% include "_plan_form.html" %}{% endwith %}
+    {% with show_cycles=False, plan_dose_field="plan_dose" %}{% include "_plan_form.html" %}{% endwith %}
   </div>
 
   <div class="setup-nav">
