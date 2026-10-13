@@ -377,7 +377,8 @@ small, .meta { color: var(--text-3); font-size: var(--fs-sm); }
 a.dial-day:hover .dial-dot { stroke-width: 3; }
 .dial-card { display: grid; gap: var(--s4); text-decoration: none; color: inherit; }
 .dial-card h2 { font-size: var(--fs-md); }
-.dial-card .dial, .ring-link .dial { max-width: 240px; margin: 0 auto; }
+/* rem, so the dial and the words inside it grow with the reader's text size where the column has room. */
+.dial-card .dial, .ring-link .dial { max-width: 15rem; margin: 0 auto; }
 .ring-link { display: block; text-decoration: none; color: inherit; border-radius: var(--r-lg); }
 .ring-link:hover .dial-track { stroke: var(--text-4); }
 .dial-legend { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s2) var(--s4); font-size: var(--fs-sm); color: var(--text-2); }
@@ -1277,7 +1278,7 @@ a { transition: color var(--dur) var(--ease-out); }
   .cycle-cols > aside { order: -1; display: grid; grid-template-columns: minmax(0, 30rem) minmax(0, 1fr); gap: var(--s4) var(--s5); align-items: start; }
   .cycle-cols > aside > * + * { margin-top: 0; }
   .cycle-cols > aside > .only-desktop { grid-row: span 3; display: grid; grid-template-columns: 180px minmax(0, 1fr); align-items: center; gap: var(--s5); }
-  .cycle-cols > aside > .only-desktop .dial { max-width: 180px; margin: 0; }
+  .cycle-cols > aside > .only-desktop .dial { max-width: 11.25rem; margin: 0; }
   .cycle-cols > aside > .only-desktop .dial-legend { grid-template-columns: minmax(0, 1fr); }
 }
 @media (min-width: 960px) {

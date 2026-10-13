@@ -52,13 +52,14 @@
 {% macro ring_svg(ring, span, cycle, size=240, compact=False, day_href=None) -%}
 {#- The cycle dial: one dot per day around a ring, chemo day at the top. Filled = every dose logged,
     outlined = doses planned, amber = a past day with doses not logged, dark = chemo day, ringed = today.
-    A small dot outside the ring marks symptoms (its colour is how bad). -#}
+    A small dot outside the ring marks symptoms (its colour is how bad). The full-size dial names the
+    ringed day's date under "of 14" ("Tue · 10/13/26"), the date of the day being shown, not always today. -#}
 {%- set g = ring_geometry(ring, size, compact) -%}
 {%- set cur = (ring | selectattr("is_today") | list | first) -%}
 {%- set full = ring | selectattr("mark", "equalto", "done") | list | length -%}
 {%- set gaps = ring | selectattr("mark", "equalto", "gap") | list | length -%}
 <svg class="dial {{ 'dial-compact' if compact }}" viewBox="0 0 {{ size }} {{ size }}" role="img"
-     aria-label="Cycle {{ cycle.number }}{% if cur %}, day {{ cur.day }} of {{ cycle.length_days }}{% endif %}. {{ full }} {{ 'day' if full == 1 else 'days' }} with every dose logged{% if gaps %}, {{ gaps }} with doses not logged{% endif %}.">
+     aria-label="Cycle {{ cycle.number }}{% if cur %}, day {{ cur.day }} of {{ cycle.length_days }}, {{ fmt_day(cur.date) }}{% endif %}. {{ full }} {{ 'day' if full == 1 else 'days' }} with every dose logged{% if gaps %}, {{ gaps }} with doses not logged{% endif %}.">
   <circle class="dial-track" cx="{{ g.c }}" cy="{{ g.c }}" r="{{ g.r }}" stroke-width="{{ g.track }}"/>
   {%- for p in g.dots %}
   {%- set d = p.day %}
@@ -76,8 +77,9 @@
   {%- if compact %}
   <text class="dial-num" x="{{ g.c }}" y="{{ g.c + size * 0.11 }}" text-anchor="middle" font-size="{{ (size * 0.32) | round(1) }}">{{ cur.day }}</text>
   {%- else %}
-  <text class="dial-num" x="{{ g.c }}" y="{{ g.c + size * 0.02 }}" text-anchor="middle" font-size="{{ (size / 7) | round(1) }}">Day {{ cur.day }}</text>
-  <text class="dial-sub" x="{{ g.c }}" y="{{ g.c + size * 0.13 }}" text-anchor="middle" font-size="{{ (size / 17) | round(1) }}">of {{ cycle.length_days }}</text>
+  <text class="dial-num" x="{{ g.c }}" y="{{ g.c - size * 0.03 }}" text-anchor="middle" font-size="{{ (size / 7) | round(1) }}">Day {{ cur.day }}</text>
+  <text class="dial-sub" x="{{ g.c }}" y="{{ g.c + size * 0.075 }}" text-anchor="middle" font-size="{{ (size / 17) | round(1) }}">of {{ cycle.length_days }}</text>
+  <text class="dial-sub dial-date" x="{{ g.c }}" y="{{ g.c + size * 0.175 }}" text-anchor="middle" font-size="{{ (size / 17) | round(1) }}">{{ cur.date.strftime("%a") }} · {{ cur.date.month }}/{{ cur.date.day }}/{{ cur.date.strftime("%y") }}</text>
   {%- endif %}
   {%- else %}
   <text class="dial-sub" x="{{ g.c }}" y="{{ g.c + size * 0.03 }}" text-anchor="middle" font-size="{{ (size / 13) | round(1) }}">Cycle {{ cycle.number }}</text>
