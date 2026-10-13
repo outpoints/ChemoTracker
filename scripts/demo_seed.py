@@ -35,7 +35,8 @@ MEDICINES = {
     "prochlorperazine": {"strength": "5 mg tablet", "dose": "1 tablet", "directions": "Example: 1 tablet every 6 hours if needed",
                          "min_hours_between": "6", "plan": {"kind": "as_needed", "days": ["1", "2", "3", "4", "5"],
                                                             "label": "If nauseated"}},
-    "senna": {"strength": "8.6 mg tablet", "dose": "2 tablets", "directions": "Example: 2 tablets at bedtime if needed",
+    "senna": {"strength": "8.6 mg tablet", "dose": "2 tablets",
+              "directions": "Example: 2 tablets at bedtime if needed, up to twice a day", "min_hours_between": "12",
               "plan": {"kind": "as_needed", "days": ["1"], "whole_cycle": "1", "label": "For constipation"}},
 }
 

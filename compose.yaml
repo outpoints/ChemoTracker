@@ -4,7 +4,7 @@ services:
     image: chemotracker:local
     container_name: chemotracker
     restart: unless-stopped
-    # Runs as this uid/gid. On Linux set CHEMO_UID/CHEMO_GID to the owner of ./data (run `id -u` / `id -g`).
+    # Runs as this uid/gid. On Linux set CHEMO_UID/CHEMO_GID to the owner of the data folder (run `id -u` / `id -g`).
     user: "${CHEMO_UID:-10001}:${CHEMO_GID:-10001}"
     env_file:
       - path: .env
@@ -17,7 +17,9 @@ services:
       # Never forward this port to the open internet (see SECURITY.md).
       - "${CHEMO_BIND:-0.0.0.0}:${CHEMO_PUBLISH_PORT:-8000}:8000"
     volumes:
-      - ./data:/data
+      # The database folder. CHEMO_DATA_HOST_DIR moves it, for example to a NAS volume. Keep it on a disk this
+      # computer owns: SQLite can't lock a network share (SMB/NFS) mounted from another computer.
+      - ${CHEMO_DATA_HOST_DIR:-./data}:/data
       - ${CHEMO_BACKUP_HOST_DIR:-./backups}:/backups
     read_only: true
     tmpfs:

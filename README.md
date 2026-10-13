@@ -43,10 +43,13 @@ Screenshots use made-up demo data (`scripts/demo_seed.py`).
 - **Reminders on your phone** through the free [ntfy](https://ntfy.sh) app: when a dose is due, when one needs getting ready, when one still isn't marked after a while, and the evening before chemo. For as-needed medicines you pick, a note when one is OK again if you need it, with overnight ones held for a morning list. See [Reminders](#reminders).
 - **Change history**: every dose, symptom, medicine, schedule and setting that's added, changed or deleted is recorded with who did it and the before and after. Deleted doses and symptom entries can be put back. The Excel report has a "Change history" sheet, so edits made after the fact are visible to the care team.
 - **Restore from Settings**: pick a backup, see what's in it compared with now, and restore. The app saves the current record first, so a restore can be undone the same way.
+- **Archive a medicine** that has logged doses once it's no longer used. It leaves Today, reminders and the medicine lists, and its doses stay in the report.
 
 ChemoTracker keeps a record. It does not give medical advice, and the pharmacy label and your care team's instructions always come first.
 
 ## Run it with Docker
+
+New to Docker, or setting it up for your family? The [setup guide](docs/setup.md) goes step by step: installing Docker, opening it on each phone, the first-run walkthrough, reminders, backups, a NAS, and updating to a new version.
 
 ```bash
 git clone https://github.com/outpoints/ChemoTracker.git
@@ -65,11 +68,11 @@ docker compose ps           # STATUS shows "healthy"
 curl http://localhost:8000/healthz
 ```
 
-On **Linux**, the container must be able to write to `./data` and the backup folder. Either set `CHEMO_UID`/`CHEMO_GID` in `.env` to your user (`id -u`, `id -g`), or run `sudo chown -R 10001:10001 data backups`.
+On **Linux**, the container must be able to write to the data folder and the backup folder. Either set `CHEMO_UID`/`CHEMO_GID` in `.env` to your user (`id -u`, `id -g`), or run `sudo chown -R 10001:10001 data backups`.
 
 ### Keeping it private
 
-All health data stays in `./data` (the SQLite database) and your backup folder. Both are git-ignored and never leave your machine unless you copy them.
+All health data stays in the data folder (the SQLite database, `./data` unless you set `CHEMO_DATA_HOST_DIR`) and your backup folder. Both are git-ignored and never leave your machine unless you copy them.
 
 - **Use your home network (LAN) or Tailscale.** Never forward the port or put it on the open internet.
 - A password is optional. Without one, anyone who can reach the port can use the app, which is fine on a trusted home network. Set `CHEMO_PASSWORD` in `.env` if people outside your household can reach it.
@@ -90,6 +93,7 @@ Set these in `.env`. All of them are optional.
 | `CHEMO_ALLOWED_HOSTS` | unset (any name) | Only answer these names and addresses, comma-separated, e.g. `chemo.example.com,192.168.1.20`. Blocks DNS rebinding |
 | `CHEMO_SECURE_COOKIE` | `0` | Set to `1` when the app is only reached over HTTPS |
 | `CHEMO_FORWARDED_ALLOW_IPS` | `127.0.0.1` | Your reverse proxy's address, so the app sees each visitor's real address |
+| `CHEMO_DATA_HOST_DIR` | `./data` | Host folder for the database, for example a folder on a NAS volume. Keep it on a disk the computer running Docker owns, not a network share mounted from another computer (SQLite can't lock files there safely). See [the setup guide](docs/setup.md#on-a-nas) |
 | `CHEMO_BACKUP_HOST_DIR` | `./backups` | Host folder for backups (an external drive or a synced folder works well) |
 | `CHEMO_BACKUP_TIME` | `03:00` | Time of day the backup schedule is anchored to |
 | `CHEMO_BACKUP_INTERVAL_HOURS` | `24` | How often to back up |
@@ -113,7 +117,7 @@ Each copy is checked before it gets its final name, so a half-written or damaged
 
 **Don't open `data/chemotracker.sqlite3` with other programs while the app is running**, especially from outside Docker (Docker Desktop on a Mac or Windows runs the app in a separate virtual machine, and SQLite can't coordinate with it there). Use **Download a copy** instead. The app also refuses to start if another copy of it is already using the same `data` folder.
 
-To restore by hand instead (for example if the app won't start):
+To restore by hand instead (for example if the app won't start), from the folder with `compose.yaml`. Use your own folders if you set `CHEMO_DATA_HOST_DIR` or `CHEMO_BACKUP_HOST_DIR`:
 
 ```bash
 docker compose down
@@ -145,6 +149,16 @@ Privacy: on the public ntfy.sh server, anyone who knows a topic name can read it
 
 Reminders come from the server, so the computer running ChemoTracker has to be on and online. A reminder that couldn't go out within 45 minutes is dropped rather than sent late.
 
+## Updating
+
+```bash
+cd ChemoTracker
+git pull
+docker compose up -d --build
+```
+
+Your data folder and backups aren't touched by the update. Before a new version changes the database's structure, the app saves a "Saved before an update" copy, listed under **Settings → Backups → Go back to an earlier copy**. The version number is at the bottom of Settings.
+
 ## Why a database, not a CSV
 
 A CSV looks simple, but as the live store it breaks quickly. Two phones saving at the same time overwrite each other. Nothing stops a typo in a time. Opening the file in Excel can reformat dates and lock it.
@@ -167,11 +181,18 @@ To try the app or take screenshots without touching real data:
 
 ```bash
 uv run python scripts/demo_seed.py /tmp/chemotracker-demo
-CHEMO_DATA_DIR=/tmp/chemotracker-demo/data CHEMO_BACKUP_ENABLED=0 uv run chemotracker
+CHEMO_DATA_DIR=/tmp/chemotracker-demo/data CHEMO_BACKUP_DIR=/tmp/chemotracker-demo/backups uv run chemotracker
 uv run --with playwright python scripts/screenshots.py http://127.0.0.1:8000 docs/screenshots
 ```
 
 The demo has three made-up people (John, Jane, Sam) and example doses. It refuses to overwrite an existing database unless you pass `--force`.
+
+The setup guide's walkthrough screenshots come from a second, empty instance. The script fills in the first-run steps with the same made-up people, an example clinic and 555-01xx numbers:
+
+```bash
+CHEMO_DATA_DIR=/tmp/chemotracker-empty/data CHEMO_BACKUP_DIR=/tmp/chemotracker-empty/backups CHEMO_PORT=8001 uv run chemotracker
+uv run --with playwright python scripts/screenshots.py --walkthrough http://127.0.0.1:8001 docs/screenshots
+```
 
 ## Development
 
