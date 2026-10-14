@@ -1,17 +1,15 @@
 # ChemoTracker
 
-A small self-hosted web app for keeping track of chemotherapy supportive medicines and symptoms. It works on phones and computers.
+I built ChemoTracker for my mom when she started chemotherapy. The clinic sent us home with a paper sheet of anti-nausea medicines, pharmacy bottles on different schedules, and a list of symptoms to watch for. Several of us help with her medicines, and keeping track of who gave what and when, then showing her care team what actually happened, was harder than it should have been.
+
+ChemoTracker is one shared record of the medicines and symptoms around each chemo cycle. It runs on a computer at home, and everyone opens it in the browser on their own phone. It's built for the person who is worn out and nauseous at 2 AM, the family members taking turns, and the care team reading the report afterwards.
+
+I'd like it to work as well for other families going through cancer as it does for mine. Pull requests are welcome, from a confusing word to a missing medicine to a whole feature. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 > [!WARNING]
-> **This project is almost entirely vibe-coded.** I built it on the fly with AI coding tools, shaped by input from my mom and other family members as we used it. I've done my best to harden it, but it has never had a professional security review.
+> **ChemoTracker is almost entirely vibe-coded.** I built it with AI coding tools and shaped it around what my mom and the rest of the family needed as we used it. I've hardened it as well as I can, but it has never had a professional security review.
 >
-> **Run it on your home network or a private network like Tailscale, and never expose it to the open internet.** I don't expose any of my own services to the internet, and this shouldn't be the first. See [SECURITY.md](SECURITY.md) for how to run it safely, what's built in, and how the dependencies are pinned.
-
-## Why this exists
-
-I built ChemoTracker for my own family while someone we love goes through chemotherapy. The clinic gave us a paper sheet of anti-nausea medicines, pharmacy bottles with different schedules, and a list of symptoms to watch for. Keeping it all straight between several people, and showing the care team what actually happened, was harder than it should be.
-
-This app is shaped around that use: a patient who is tired and nauseous, family members taking turns, and a care team that wants a clear record. Every family's situation is different, and I'd love for this to work just as smoothly for others going through cancer. **Pull requests are fully welcome**, from fixing a confusing word to adding a medicine or a whole feature. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to help.
+> **Run it on your home network or a private network like Tailscale, and never expose it to the open internet.** [SECURITY.md](SECURITY.md) explains how to run it safely.
 
 <p>
   <img src="docs/screenshots/today-phone.png" alt="Today on a phone: cycle ring, symptom buttons, time-of-day compartments" width="260">
@@ -19,105 +17,84 @@ This app is shaped around that use: a patient who is tired and nauseous, family 
   <img src="docs/screenshots/today-phone-dark.png" alt="Today on a phone in the dark theme" width="260">
 </p>
 <img src="docs/screenshots/today-desktop.png" alt="Today on a computer" width="800">
-<img src="docs/screenshots/today-desktop-dark.png" alt="Today on a computer in the dark theme" width="800">
 
-Screenshots use made-up demo data (`scripts/demo_seed.py`).
+Screenshots use made-up demo data.
 
-- **Today** groups doses into Morning, Afternoon, Evening and Bedtime by their scheduled time, plus clinic medicines on chemo day. Each dose has a large **Taken** button and a **Skip** button. Accidental taps can be undone.
-- **As-needed medicines** show a countdown ring to when the next dose is allowed, based on the label (for example "every 6 hours"). The app also respects the days the clinic allows them.
-- After a dose, the app asks **did it help?** and **how was the dose?** (about right, too strong, not enough). You can add side effects and notes.
-- **Symptoms** are a core feature, not an add-on. Tap nausea, vomiting, temperature, pain, tiredness, diarrhea, constipation and more, then pick None, Mild, Moderate or Severe, or enter a number. After logging nausea, the app lists your own as-needed nausea medicines and when each one is allowed next. A temperature at or above the fever line, or anything marked severe, puts the care team's phone number front and center.
-- A **cycle ring** shows where you are in the cycle. The **cycle sheet** is a day-by-day grid like the paper handouts clinics give out.
-- **Report for the care team**: a styled Excel workbook (summary, day by day, dose log, symptoms, cycle sheet, medicine list) plus CSV files. Planned doses that were never logged show as "Not logged", so gaps are visible.
-- **Medicine catalog**: about 50 medicines with plain-language summaries from MedlinePlus. It covers AC-T and other common chemo, targeted and hormone therapy, anti-nausea medicines, white-blood-cell boosters, pre-medicines, and bowel and comfort medicines. You can add custom medicines.
-- **Write in your prescriptions**: type or paste what's on each bottle ("dexAMETHasone 4MG TAB - Take 2 tablets by mouth daily. Take on days 2, 3, AND 4 AFTER CHEMO THEN STOP") and the app fills in the strength, dose, how often, and the cycle days, with real dates counted from chemo day. It shows what it understood before saving and flags every guess. See [docs/prescription-formats.md](docs/prescription-formats.md) for what it reads and the sources behind it.
-- **Chemo plans the way clinics write them**: chemo day, how often it repeats (every 1, 2, 3 or 4 weeks), how many cycles, and an optional second part ("AC every 14 days x 4, then paclitaxel weekly x 12"). Each cycle's date stays editable when treatment moves.
-- **First-run walkthrough**: add who's using the app, set chemo day, add medicines, check each label, add the care team's numbers. Everything stays editable later. There are no fixed protocol templates, because every person's schedule is different.
-- **Automatic backups**: daily at 3:00 AM by default, to a folder you choose. Each backup is the database plus the Excel report.
-- **People**: add the patient, family and caregivers. Each phone or computer remembers who is using it, and every dose and symptom records who logged it and who edited it ("John · edited by Jane"). The Excel and CSV reports include a "Logged by" column and a per-person count. Profiles are for attribution, not security. For a lock, set the optional family password.
-- **Light and dark themes** on phones and computers. Pick one in Settings, or let it follow the device. Dark is easier on the eyes at bedtime. Fonts are built for low-vision legibility (Atkinson Hyperlegible).
-- **°C or °F**: pick the temperature unit in Settings. A reading typed in the other unit (like 38.2 when set to °F) is recognized and converted, and the fever line, report and CSV all follow the setting.
-- **Safety checks for tired people**: logging an as-needed dose sooner than the label allows asks first. Moving a delayed chemo day offers to move every later cycle too. Re-running setup says exactly which medicines it stopped.
-- **Several people, one record**: if two people log the same medicine within minutes, the second is asked first ("Jane logged one at 9:31 PM"). Tapping **Taken** on a dose someone else already recorded says so instead of overwriting it. Editing an entry someone else just changed shows their version first.
-- **Get it ready ahead**: medicines that need a step before the dose show it on Today and get their own reminder, for example "Take it out of the fridge at 1:00 PM" for a 1:30 PM shot. Filgrastim and pegfilgrastim syringes start at 30 minutes, as their FDA labels say. Any medicine can have one.
-- **Reminders on your phone** through the free [ntfy](https://ntfy.sh) app: when a dose is due, when one needs getting ready, when one still isn't marked after a while, and the evening before chemo. For as-needed medicines you pick, a note when one is OK again if you need it, with overnight ones held for a morning list. See [Reminders](#reminders).
-- **Change history**: every dose, symptom, medicine, schedule and setting that's added, changed or deleted is recorded with who did it and the before and after. Deleted doses and symptom entries can be put back. The Excel report has a "Change history" sheet, so edits made after the fact are visible to the care team.
-- **Restore from Settings**: pick a backup, see what's in it compared with now, and restore. The app saves the current record first, so a restore can be undone the same way.
-- **Archive a medicine** that has logged doses once it's no longer used. It leaves Today, reminders and the medicine lists, and its doses stay in the report.
+## What it does
 
-ChemoTracker keeps a record. It does not give medical advice, and the pharmacy label and your care team's instructions always come first.
+- **Today** shows the day's doses in Morning, Afternoon, Evening and Bedtime compartments, like a pill organizer, plus clinic medicines on chemo day. Tap **Taken**, say when it was taken, and it's saved with your name. A wrong tap can be undone, and if someone else already logged that dose, the app says so instead of saving it twice.
+- **As-needed medicines** show a ring that counts down to when the label allows the next dose. Logging one sooner than the label allows asks first.
+- **Symptoms** covers nausea, vomiting, temperature, pain, tiredness and more, answered in plain words or a number. After nausea, the app lists your nausea medicines and when each one is OK next. A fever or anything severe puts the care team's phone number at the top.
+- **The cycle** is a ring with a dot for each day, plus a day-by-day sheet like the clinic's paper handout. Day 1 is chemo day. Plans can repeat every 1 to 4 weeks and have a second part ("AC every 14 days x 4, then paclitaxel weekly x 12"). When chemo is delayed, move Day 1 and the doses move with it.
+- **Medicines** go in by pasting what's printed on the bottle ("dexAMETHasone 4MG TAB - Take 2 tablets by mouth daily. Take on days 2, 3, AND 4 AFTER CHEMO THEN STOP") and the app fills in the dose, how often and which days. It shows what it understood and marks every guess before saving ([what it reads](docs/prescription-formats.md)). A built-in list of 50 medicines has plain-language summaries from MedlinePlus.
+- **Report** makes an Excel workbook and CSV files for the care team: every dose, symptom and later edit, and who logged it. Planned doses that were never logged show as "Not logged", so gaps are visible.
+- **Reminders** reach each phone through the free [ntfy](https://ntfy.sh) app: when a dose is due, when a shot needs to come out of the fridge, when a dose still isn't marked, and the evening before chemo.
+- **Change history** records every edit and who made it, and deleted entries can be put back. The app also backs itself up every night.
 
-## Run it with Docker
+It works in light or dark (following the phone), in °C or °F, and uses Atkinson Hyperlegible, a typeface made for low vision.
 
-New to Docker, or setting it up for your family? The [setup guide](docs/setup.md) goes step by step: installing Docker, opening it on each phone, the first-run walkthrough, reminders, backups, a NAS, and updating to a new version.
+ChemoTracker keeps a record. It doesn't give medical advice. The pharmacy label and your care team's instructions always come first.
+
+## Run it
+
+You need Docker on a computer that stays on at home. The [setup guide](docs/setup.md) goes step by step, from installing Docker to showing the family how to use it, and covers reminders, a NAS and using it away from home.
 
 ```bash
 git clone https://github.com/outpoints/ChemoTracker.git
 cd ChemoTracker
-cp .env.example .env        # optional: set TZ, a family password, the backup folder
+cp .env.example .env        # optional: time zone, family password, backup folder
 mkdir -p data backups
 docker compose up -d --build
 ```
 
-Open `http://<this-computer>:8000` on any phone or computer on the same network. On iPhone, use **Share → Add to Home Screen** to get an app icon.
+Open `http://<this-computer>:8000` on any phone or computer on the same network, and add it to each phone's home screen so it opens like an app. The first visit walks through setup: who's using it, chemo day, the medicines, and the care team's phone numbers.
 
-Check it's healthy:
+On Linux, the container runs as user 10001 and needs to write to `data` and `backups`. Set `CHEMO_UID` and `CHEMO_GID` in `.env` to your own (`id -u`, `id -g`), or run `sudo chown -R 10001:10001 data backups`.
 
-```bash
-docker compose ps           # STATUS shows "healthy"
-curl http://localhost:8000/healthz
-```
+To update, run `git pull` and then `docker compose up -d --build`. Your data and backups stay where they are, and the app saves a copy before any update that changes the database.
 
-On **Linux**, the container must be able to write to the data folder and the backup folder. Either set `CHEMO_UID`/`CHEMO_GID` in `.env` to your user (`id -u`, `id -g`), or run `sudo chown -R 10001:10001 data backups`.
+## Privacy and security
 
-### Keeping it private
+Everything stays on the computer running ChemoTracker, in the data folder and the backup folder. Nothing is sent anywhere else unless you turn on reminders.
 
-All health data stays in the data folder (the SQLite database, `./data` unless you set `CHEMO_DATA_HOST_DIR`) and your backup folder. Both are git-ignored and never leave your machine unless you copy them.
+- A family password is optional. Set `CHEMO_PASSWORD` if people outside your household can reach your network. The people you add in the app are names for "logged by", not accounts, so the password is the only lock.
+- To use it away from home, set `CHEMO_BIND=127.0.0.1` and `CHEMO_SECURE_COOKIE=1`, then run `tailscale serve --bg 8000`. Only your own devices can reach it, over HTTPS.
+- Reminders go through the public ntfy.sh server unless you run your own. Anyone who knows the topic name can read them, so keep it private, or turn off **Show medicine names** in Settings.
+- The app uses seven Python packages, each pinned to an exact version with a checksum in `uv.lock`. Fonts and icons are bundled, so pages load nothing from other sites. Dependabot proposes updates weekly, and CI checks for known vulnerabilities.
 
-- **Use your home network (LAN) or Tailscale.** Never forward the port or put it on the open internet.
-- A password is optional. Without one, anyone who can reach the port can use the app, which is fine on a trusted home network. Set `CHEMO_PASSWORD` in `.env` if people outside your household can reach it.
-- A name on your home DNS (Pi-hole, your router) works with no setting. To answer only to your own names, list them in `CHEMO_ALLOWED_HOSTS`.
-- To reach it away from home, use [Tailscale](https://tailscale.com): set `CHEMO_BIND=127.0.0.1`, run `tailscale serve --bg 8000`, and set `CHEMO_SECURE_COOKIE=1`. Only your own devices can reach it, over HTTPS.
-- [SECURITY.md](SECURITY.md) covers reverse proxies, what's protected, and what isn't.
+[SECURITY.md](SECURITY.md) covers reverse proxies, allowed host names, and what is and isn't protected.
 
-## Configuration
+## Settings
 
 Set these in `.env`. All of them are optional.
 
 | Variable | Default | What it does |
 |---|---|---|
 | `TZ` | `America/Los_Angeles` | Time zone for dose times and backups |
-| `CHEMO_PASSWORD` | unset (no password) | Optional family password for every page. Leave it out to skip the sign-in screen |
+| `CHEMO_PASSWORD` | unset | Family password for every page. Leave it out to skip the sign-in screen |
 | `CHEMO_PUBLISH_PORT` | `8000` | Port on the host |
 | `CHEMO_BIND` | `0.0.0.0` | `0.0.0.0` reaches your home network. `127.0.0.1` keeps it on this computer (for Tailscale serve or a local proxy) |
 | `CHEMO_ALLOWED_HOSTS` | unset (any name) | Only answer these names and addresses, comma-separated, e.g. `chemo.example.com,192.168.1.20`. Blocks DNS rebinding |
 | `CHEMO_SECURE_COOKIE` | `0` | Set to `1` when the app is only reached over HTTPS |
 | `CHEMO_FORWARDED_ALLOW_IPS` | `127.0.0.1` | Your reverse proxy's address, so the app sees each visitor's real address |
-| `CHEMO_DATA_HOST_DIR` | `./data` | Host folder for the database, for example a folder on a NAS volume. Keep it on a disk the computer running Docker owns, not a network share mounted from another computer (SQLite can't lock files there safely). See [the setup guide](docs/setup.md#on-a-nas) |
-| `CHEMO_BACKUP_HOST_DIR` | `./backups` | Host folder for backups (an external drive or a synced folder works well) |
-| `CHEMO_BACKUP_TIME` | `03:00` | Time of day the backup schedule is anchored to |
+| `CHEMO_DATA_HOST_DIR` | `./data` | Host folder for the database, for example on a NAS. It must be on a disk the Docker computer owns, not a network share ([why](docs/setup.md#on-a-nas)) |
+| `CHEMO_BACKUP_HOST_DIR` | `./backups` | Host folder for backups. An external drive or a synced folder works well |
+| `CHEMO_BACKUP_TIME` | `03:00` | Time of day the backup schedule starts from |
 | `CHEMO_BACKUP_INTERVAL_HOURS` | `24` | How often to back up |
-| `CHEMO_BACKUP_KEEP` | `30` | How many backups to keep (older ones are deleted) |
+| `CHEMO_BACKUP_KEEP` | `30` | How many backups to keep. Older ones are deleted |
 | `CHEMO_BACKUP_ENABLED` | `1` | Set to `0` to turn automatic backups off |
 | `CHEMO_UID` / `CHEMO_GID` | `10001` | User the container runs as |
-| `CHEMO_SECRET_KEY` | generated | Session signing key (stored in `data/.secret_key` if unset) |
+| `CHEMO_SECRET_KEY` | generated | Session signing key, stored in `data/.secret_key` if unset |
 
 ## Backups and restore
 
-Backups run inside the app. No cron is needed. If the computer was off at 3:00 AM, a catch-up backup runs a minute after the app starts. **Settings → Backups** shows the last good backup and the next one, and has **Back up now** and **Download a copy** buttons.
+The app backs itself up at 3:00 AM every day. If the computer was off then, it catches up a minute after starting. Each backup is a copy of the database plus the Excel report, which opens without the app.
 
-Each backup is two files:
+**Settings → Backups** shows the last and next backup and has **Back up now** and **Download a copy**. Under **Go back to an earlier copy**, pick a backup to see what's in it before restoring. The app saves the current record first, so a restore can be undone.
 
-- `chemotracker-YYYYMMDD-HHMMSS.sqlite3`: a consistent copy of the database, taken safely while the app runs
-- `chemotracker-YYYYMMDD-HHMMSS.xlsx`: the full Excel report at that moment, readable without the app
+Don't open `data/chemotracker.sqlite3` in other programs while the app is running, especially from outside Docker. Use **Download a copy** instead.
 
-**To restore**, open **Settings → Backups → Restore**, pick a backup, check what's in it, and tap **Restore this backup**. The app first saves what's there now as a "Saved before a restore" copy, so you can switch back. **Restore from a file** takes a copy made with **Download a copy**, for example from another computer.
-
-Each copy is checked before it gets its final name, so a half-written or damaged copy never looks like a good backup. Before a new version changes the database's structure, the app also saves a `...-before-upgrade-vN.sqlite3` copy, and it won't upgrade if it can't.
-
-**Don't open `data/chemotracker.sqlite3` with other programs while the app is running**, especially from outside Docker (Docker Desktop on a Mac or Windows runs the app in a separate virtual machine, and SQLite can't coordinate with it there). Use **Download a copy** instead. The app also refuses to start if another copy of it is already using the same `data` folder.
-
-To restore by hand instead (for example if the app won't start), from the folder with `compose.yaml`. Use your own folders if you set `CHEMO_DATA_HOST_DIR` or `CHEMO_BACKUP_HOST_DIR`:
+To restore by hand, for example if the app won't start, run this in the folder with `compose.yaml` (with your own folders if you changed `CHEMO_DATA_HOST_DIR` or `CHEMO_BACKUP_HOST_DIR`):
 
 ```bash
 docker compose down
@@ -126,115 +103,46 @@ rm -f data/chemotracker.sqlite3-wal data/chemotracker.sqlite3-shm
 docker compose up -d
 ```
 
-## Reminders
-
-Reminders use [ntfy](https://ntfy.sh), a free notification app with no account. Everyone who should get reminders subscribes to the same topic.
-
-1. In **Settings → Reminders on your phone**, tick **Send reminders** and save. The app suggests a long random topic name.
-2. On each phone, install **ntfy** (App Store or Google Play), tap **+**, and type that topic name.
-3. Tap **Send a test**.
-
-What gets sent:
-
-- **Due**: at the dose time, or 5 to 60 minutes before. Doses at the same time come as one notification.
-- **Get it ready**: at each medicine's prep time, for example "Take it out of the fridge: Filgrastim".
-- **Not marked yet**: if a dose isn't marked taken or skipped after 15 to 90 minutes (or never).
-- **Chemo tomorrow**: at 6:00 PM the day before each Day 1.
-- **OK again**, for the as-needed medicines you tick under **As-needed medicines**: once the label's time between doses has passed since the last one, and its daily limit (counted over 24 hours) allows another. It says the medicine is OK again if you need it. It never says one is due, and nothing is marked missed.
-- **Morning list**: at the time you choose (9:00 AM unless you change it), one notification with each ticked medicine planned that day and when it's OK. An "OK again" that comes up overnight, from the time under **Hold reminders overnight from** until the morning list, waits for the list instead of waking anyone. Medicines on a schedule keep their own times.
-
-Tapping a notification opens ChemoTracker at the **Link address** in Settings. Use the address family members' phones reach, for example `http://192.168.1.20:8000` or your Tailscale name.
-
-Privacy: on the public ntfy.sh server, anyone who knows a topic name can read its messages, so keep the long random name private. Turn off **Show medicine names** to send only "Medicine due at 9:30 PM". You can also run your own ntfy server and set it under **More options** (with an access token for a protected topic). On iPhones, a self-hosted server needs `upstream-base-url` set to deliver right away.
-
-Reminders come from the server, so the computer running ChemoTracker has to be on and online. A reminder that couldn't go out within 45 minutes is dropped rather than sent late.
-
-## Updating
-
-```bash
-cd ChemoTracker
-git pull
-docker compose up -d --build
-```
-
-Your data folder and backups aren't touched by the update. Before a new version changes the database's structure, the app saves a "Saved before an update" copy, listed under **Settings → Backups → Go back to an earlier copy**. The version number is at the bottom of Settings.
-
-## Why a database, not a CSV
-
-A CSV looks simple, but as the live store it breaks quickly. Two phones saving at the same time overwrite each other. Nothing stops a typo in a time. Opening the file in Excel can reformat dates and lock it.
-
-So SQLite is the source of truth, and Excel and CSV files are generated from it whenever you need them. The care team gets clean, consistent files, and the data stays safe.
-
-## People and devices
-
-The first-run walkthrough asks who is using the app. After that:
-
-- A phone or computer that hasn't been used before asks **Who's using this?** once and remembers the answer.
-- Tap your name in the header (phone) or the sidebar (computer) to switch, for example when handing the phone to someone else.
-- **Settings → People** adds, renames or removes people. Removed people keep their name on past entries.
-
-<img src="docs/screenshots/people-phone.png" alt="Who's using this? picker" width="260">
-
-## Demo data
-
-To try the app or take screenshots without touching real data:
-
-```bash
-uv run python scripts/demo_seed.py /tmp/chemotracker-demo
-CHEMO_DATA_DIR=/tmp/chemotracker-demo/data CHEMO_BACKUP_DIR=/tmp/chemotracker-demo/backups uv run chemotracker
-uv run --with playwright python scripts/screenshots.py http://127.0.0.1:8000 docs/screenshots
-```
-
-The demo has three made-up people (John, Jane, Sam) and example doses. It refuses to overwrite an existing database unless you pass `--force`.
-
-The setup guide's walkthrough screenshots come from a second, empty instance. The script fills in the first-run steps with the same made-up people, an example clinic and 555-01xx numbers:
-
-```bash
-CHEMO_DATA_DIR=/tmp/chemotracker-empty/data CHEMO_BACKUP_DIR=/tmp/chemotracker-empty/backups CHEMO_PORT=8001 uv run chemotracker
-uv run --with playwright python scripts/screenshots.py --walkthrough http://127.0.0.1:8001 docs/screenshots
-```
-
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/). Read [CONTRIBUTING.md](CONTRIBUTING.md) first: **no personal information ever goes into this repo**, and every screen is designed for the least technical person in the family.
+Requires [uv](https://docs.astral.sh/uv/). Read [CONTRIBUTING.md](CONTRIBUTING.md) first: no personal information ever goes into this repo, and every screen is designed for the least technical person in the family.
 
 ```bash
-git config core.hooksPath .githooks          # blocks commits containing personal information
+git config core.hooksPath .githooks       # blocks commits that contain personal information
 uv sync
 uv run pytest
-CHEMO_DATA_DIR=./data uv run chemotracker     # http://127.0.0.1:8000
+uv run python scripts/demo_seed.py /tmp/chemotracker-demo
+CHEMO_DATA_DIR=/tmp/chemotracker-demo/data CHEMO_BACKUP_DIR=/tmp/chemotracker-demo/backups uv run chemotracker
 ```
 
-Layout:
+That opens a demo at `http://127.0.0.1:8000` with three made-up people (John, Jane and Sam) and example doses. Screenshots for the repo come only from the demo: `uv run --with playwright python scripts/screenshots.py http://127.0.0.1:8000 docs/screenshots`. The setup guide's first-run shots use `--walkthrough` against a second, empty instance.
 
-- `src/chemotracker/web.py`: routes (server-rendered pages, plain HTML forms)
-- `schedule.py`: cycle-day math, dose slots, time-of-day grouping, as-needed timing
+The app is FastAPI with server-rendered Jinja pages and plain CSS. There's no JavaScript build step, and every page works without JavaScript. SQLite holds the record, because two phones saving to a CSV at the same time would overwrite each other. The Excel and CSV files are generated from it. Planned doses aren't stored. They're computed from each cycle's Day 1 and the medicine's schedule, so moving chemo day moves every dose.
+
+In `src/chemotracker/`:
+
+- `web.py`: routes
+- `schedule.py`: cycle days, dose slots, as-needed timing
 - `store.py`: reads, writes and validation
+- `rxparse.py`: reads typed or pasted prescriptions
+- `medinfo.py`: the medicine list
+- `symptoms.py`: symptoms and how severe each one is
 - `export.py`: Excel and CSV reports
-- `backup.py`: backup scheduler, snapshots, pruning
-- `medinfo.py`: the medicine catalog
-- `symptoms.py`: the symptom list and severity wording
-- `profiles.py`: people and "logged by" attribution
-- `rxparse.py`: reads typed or pasted prescriptions (see `docs/prescription-formats.md`)
-- `units.py`: °C / °F handling
-- `history.py`: change history (written by SQLite triggers, see `db.py`)
 - `reminders.py`: ntfy reminders
+- `backup.py`: backups and restore
+- `history.py`: change history, written by SQLite triggers in `db.py`
+- `profiles.py`: people and who logged what
 - `security.py`: cross-site and host checks, security headers, sign-in throttle
-- `templates/` and `static/`: UI (no JavaScript build step, and every page works without JavaScript)
-
-Planned doses are not stored. They are computed from each cycle's Day 1 and the medicine's schedule (for example "Days 2–4 at 9:00 PM"), so moving chemo day moves every dose.
-
-## Dependencies
-
-Running it needs only Docker. The app uses seven Python packages (FastAPI, Uvicorn, Jinja2, python-multipart, openpyxl, itsdangerous, tzdata), each pinned to an exact version and locked with a checksum in `uv.lock`, along with everything they bring in. Fonts and icons are bundled, so nothing loads from other sites. Dependabot proposes updates weekly, and CI checks the locked packages for known vulnerabilities. Details are in [SECURITY.md](SECURITY.md#dependencies).
+- `units.py`: °C and °F
+- `templates/` and `static/`: the pages
 
 ## To do
 
-Built for one family during a loved one's chemo, so some things aren't done yet. Pull requests are welcome.
+ChemoTracker was built around my mom's treatment, so some things aren't done yet.
 
-- [ ] **More than one patient per install.** Today each install tracks one person. A household with two people in treatment needs two installs (two `data` folders and ports).
+- [ ] **More than one patient per install.** Today each install tracks one person. A household with two people in treatment needs two installs, each with its own `data` folder and port.
 - [ ] **Offline logging.** Phones need to reach the server to log. A safe version would show the last loaded Today page offline, queue taps with a unique ID so they're never saved twice, and on reconnecting show anything that clashed with what someone else logged meanwhile.
-- [ ] **Test on a Raspberry Pi.** The app is built to be light (no build step, SQLite, about 4 ms per prescription parse), but it hasn't been run on a Pi yet.
+- [ ] **Test on a Raspberry Pi.** The app is built to be light (no build step, SQLite, about 4 ms to read a prescription), but it hasn't been run on a Pi yet.
 
 ## Credits
 

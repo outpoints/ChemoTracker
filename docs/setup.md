@@ -115,7 +115,9 @@ Reminders use [ntfy](https://ntfy.sh), a free notification app that doesn't need
 
 You choose when a dose reminder comes (at the dose time or a few minutes before), whether to remind when a dose isn't marked, and whether to remind the evening before chemo. For as-needed medicines you can ask to be told when one is OK again, with overnight ones held for a morning list.
 
-Under **Advanced, for whoever set this up**, set **Link address** to the address the phones use, so tapping a reminder opens the app.
+A shot kept in the fridge also gets a reminder to take it out, at the time set in its "Get it ready ahead" step. The reminder the evening before chemo comes at 6:00 PM. A reminder that couldn't go out within 45 minutes, for example because the computer was asleep, is dropped rather than sent late.
+
+Under **Advanced, for whoever set this up**, set **Link address** to the address the phones use, so tapping a reminder opens the app. You can also point it at your own ntfy server there. On iPhones, a self-hosted server needs `upstream-base-url` set to deliver right away.
 
 Anyone who knows the reminder name can read the reminders, so keep it private. To leave medicine names out of notifications, untick **Show medicine names**.
 
@@ -125,7 +127,7 @@ Anyone who knows the reminder name can read the reminders, so keep it private. T
 
 ChemoTracker backs itself up every day at 3:00 AM by default. Each backup is the database plus the Excel report, so it can be read without the app. If the computer was off at 3:00 AM, a backup runs a minute after the app starts.
 
-**Settings → Backups** shows the last good backup and the next one. **Back up now** makes one straight away. **Download a copy** saves one to the phone or computer you're using. **Go back to an earlier copy** shows what's in a backup and restores it. The app saves the current record first, so a restore can be undone.
+**Settings → Backups** shows the last good backup and the next one. **Back up now** makes one straight away. **Download a copy** saves one to the phone or computer you're using. **Go back to an earlier copy** shows what's in a backup and restores it. The app saves the current record first, so a restore can be undone. **Restore from a file**, under **Advanced, for whoever set this up**, takes a copy made with **Download a copy**, for example from another computer.
 
 Keep backups on a different disk from the app if you can. The [README](../README.md#backups-and-restore) covers restoring by hand.
 
