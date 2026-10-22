@@ -4,8 +4,10 @@
 # The app itself is copied as plain source, so no build tool is downloaded at build time.
 
 # Bump these together with `docker buildx imagetools inspect <image>` to get the new digest.
-ARG PYTHON_IMAGE=python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.10.2@sha256:94a23af2d50e97b87b522d3cea24aaf8a1faedec1344c952767434f69585cbf9
+# Python 3.12.15 with Debian's October 2026 fixes: OpenSSL 3.0.22 and ca-certificates without the emSign ECC
+# root whose intermediate keys leaked. uv 0.13.5 drops that root from its own store and blocks those keys.
+ARG PYTHON_IMAGE=python:3.12.15-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff
 
 FROM ${UV_IMAGE} AS uv
 
