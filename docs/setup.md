@@ -173,6 +173,23 @@ docker compose up -d --build
 
 The data folder and backups stay as they are. Before a new version changes the database's structure, the app saves a "Saved before an update" copy, which **Settings → Backups → Go back to an earlier copy** lists. The version number is at the bottom of Settings.
 
+### Use a published image instead of building
+
+Every release is also published as a ready-made image for Intel/AMD and ARM computers (including Apple silicon and most NAS boxes), so Docker doesn't have to build it. Put the version you want in `.env`:
+
+```bash
+CHEMO_IMAGE=ghcr.io/outpoints/chemotracker:0.7.1
+```
+
+Then start it, or update it after changing the version, with:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Leave out `--build` from then on. With `CHEMO_IMAGE` set, `--build` builds the code in this folder instead and labels it with that name. `ghcr.io/outpoints/chemotracker:latest` always points to the newest release, but a version number means nothing changes until you change it. Remove the line to go back to building it yourself.
+
 ## Show the family
 
 Everyone else only needs a few things. Show them once on their own phone.

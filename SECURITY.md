@@ -57,10 +57,11 @@ Everything is pinned so a build can't quietly pull in something new:
 - The Docker base images (Python and uv) are pinned by digest.
 - The app's own code is copied in as plain source, so no packaging tool is downloaded at build time.
 - The GitHub Actions used for CI are pinned to exact commits, not tags.
+- Published images (`ghcr.io/outpoints/chemotracker`) are built by GitHub Actions from the tagged commit, started once as a check before they're pushed, and carry an SBOM and signed build provenance. Check one with `gh attestation verify oci://ghcr.io/outpoints/chemotracker:<version> --repo outpoints/ChemoTracker`.
 
 Pinning means updates don't arrive by themselves, so:
 
-- **Dependabot** opens a pull request each week when a pinned package, base image or action has an update. Each one runs the tests before it can be merged.
+- **Dependabot** opens a pull request each week when a pinned package, base image or action has an update. Each one runs the tests, and builds and starts the image, before it can be merged.
 - **CI checks every locked package against known vulnerabilities** (pip-audit) on every push.
 
 To check by hand:

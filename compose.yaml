@@ -1,7 +1,10 @@
 services:
   chemotracker:
+    # Builds from this folder by default. To run a published release instead, set CHEMO_IMAGE in .env, for
+    # example ghcr.io/outpoints/chemotracker:0.7.1, then `docker compose pull` and `docker compose up -d`
+    # (without --build, which would build this folder under that name).
     build: .
-    image: chemotracker:local
+    image: ${CHEMO_IMAGE:-chemotracker:local}
     container_name: chemotracker
     restart: unless-stopped
     # Runs as this uid/gid. On Linux set CHEMO_UID/CHEMO_GID to the owner of the data folder (run `id -u` / `id -g`).

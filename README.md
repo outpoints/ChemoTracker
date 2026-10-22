@@ -51,7 +51,7 @@ Open `http://<this-computer>:8000` on any phone or computer on the same network,
 
 On Linux, the container runs as user 10001 and needs to write to `data` and `backups`. Set `CHEMO_UID` and `CHEMO_GID` in `.env` to your own (`id -u`, `id -g`), or run `sudo chown -R 10001:10001 data backups`.
 
-To update, run `git pull` and then `docker compose up -d --build`. Your data and backups stay where they are, and the app saves a copy before any update that changes the database.
+To update, run `git pull` and then `docker compose up -d --build`. Your data and backups stay where they are, and the app saves a copy before any update that changes the database. To skip the build, each release is also published as an image: set `CHEMO_IMAGE` in `.env` ([setup guide](docs/setup.md#use-a-published-image-instead-of-building)).
 
 ## Privacy and security
 
