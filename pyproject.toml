@@ -9,7 +9,7 @@ requires-python = ">=3.12,<3.13"
 # with a checksum in uv.lock, and Docker installs only from that lock. Update with
 # `uv lock --upgrade-package <name>` after reading the release notes, then run the tests.
 dependencies = [
-    "fastapi==0.143.0",
+    "fastapi==0.156.7",
     "uvicorn==0.54.0",
     "jinja2==3.1.6",
     "python-multipart==0.0.32",
