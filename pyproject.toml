@@ -9,18 +9,18 @@ requires-python = ">=3.12,<3.13"
 # with a checksum in uv.lock, and Docker installs only from that lock. Update with
 # `uv lock --upgrade-package <name>` after reading the release notes, then run the tests.
 dependencies = [
-    "fastapi==0.143.0",
+    "fastapi==0.162.0",
     "uvicorn==0.54.0",
     "jinja2==3.1.6",
-    "python-multipart==0.0.32",
+    "python-multipart==0.0.33",
     "openpyxl==3.1.5",
     "itsdangerous==2.2.0",
-    "tzdata==2026.5",
+    "tzdata==2026.6",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "httpx==0.28.1",
 ]
 
@@ -28,7 +28,7 @@ dev = [
 chemotracker = "chemotracker.__main__:main"
 
 [build-system]
-requires = ["hatchling==1.32.4"]  # only for local development. The Docker image never builds the package
+requires = ["hatchling==1.33.0"]  # only for local development. The Docker image never builds the package
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
